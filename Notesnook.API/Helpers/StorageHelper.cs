@@ -1,0 +1,79 @@
+using System;
+using System.Collections.Generic;
+using Notesnook.API.Models;
+using Streetwriters.Common.Enums;
+using Streetwriters.Common.Models;
+
+namespace Notesnook.API.Helpers
+{
+    class StorageHelper
+    {
+        const long MB = 1024 * 1024;
+        const long GB = 1024 * MB;
+        public readonly static Dictionary<SubscriptionPlan, long> MAX_STORAGE_PER_MONTH = new()
+            {
+                { SubscriptionPlan.FREE, 50L * MB },
+                { SubscriptionPlan.ESSENTIAL, GB },
+                { SubscriptionPlan.PRO, 10L * GB },
+                { SubscriptionPlan.EDUCATION, 10L * GB },
+                { SubscriptionPlan.BELIEVER, 25L * GB },
+                { SubscriptionPlan.LEGACY_PRO, -1 }
+            };
+        public readonly static Dictionary<SubscriptionPlan, long> MAX_FILE_SIZE = new()
+            {
+                { SubscriptionPlan.FREE, 10 * MB },
+                { SubscriptionPlan.ESSENTIAL, 100 * MB },
+                { SubscriptionPlan.PRO, 1L * GB },
+                { SubscriptionPlan.EDUCATION, 1L * GB },
+                { SubscriptionPlan.BELIEVER, 5L * GB },
+                { SubscriptionPlan.LEGACY_PRO, 512 * MB }
+            };
+
+        public static long GetStorageLimitForPlan(Subscription subscription)
+        {
+            return MAX_STORAGE_PER_MONTH[subscription.Plan];
+        }
+
+        public static long GetFileSizeLimitForPlan(Subscription subscription)
+        {
+            return MAX_FILE_SIZE[subscription.Plan];
+        }
+
+        public static bool IsStorageLimitReached(Subscription subscription, long limit)
+        {
+            var storageLimit = GetStorageLimitForPlan(subscription);
+            if (storageLimit == -1) return false;
+            return limit > storageLimit;
+        }
+
+        public static bool IsFileSizeExceeded(Subscription subscription, long fileSize)
+        {
+            var maxFileSize = MAX_FILE_SIZE[subscription.Plan];
+            return fileSize > maxFileSize;
+        }
+
+        public static Limit RolloverStorageLimit(Limit? limit)
+        {
+            var updatedAt = DateTimeOffset.FromUnixTimeMilliseconds(limit?.UpdatedAt ?? 0);
+            if (limit == null || DateTimeOffset.UtcNow.Year > updatedAt.Year || DateTimeOffset.UtcNow.Month > updatedAt.Month)
+            {
+                limit = new Limit { UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Value = 0 };
+                return limit;
+            }
+            return limit;
+        }
+
+        private static readonly string[] sizes = ["B", "KB", "MB", "GB", "TB"];
+        public static string FormatBytes(long size)
+        {
+            int order = 0;
+            while (size >= 1024 && order < sizes.Length - 1)
+            {
+                order++;
+                size = size / 1024;
+            }
+
+            return String.Format("{0:0.##} {1}", size, sizes[order]);
+        }
+    }
+}

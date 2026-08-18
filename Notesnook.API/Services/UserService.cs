@@ -1,0 +1,327 @@
+/*
+This file is part of the Notesnook Sync Server project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the Affero GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+Affero GNU General Public License for more details.
+
+You should have received a copy of the Affero GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using MongoDB.Driver;
+using Notesnook.API.Helpers;
+using Notesnook.API.Interfaces;
+using Notesnook.API.Models;
+using Notesnook.API.Models.Responses;
+using Notesnook.API.Repositories;
+using Streetwriters.Common;
+using Streetwriters.Common.Accessors;
+using Streetwriters.Common.Enums;
+using Streetwriters.Common.Extensions;
+using Streetwriters.Common.Messages;
+using Streetwriters.Common.Models;
+using Streetwriters.Data.Interfaces;
+
+namespace Notesnook.API.Services
+{
+    public class UserService(IHttpContextAccessor accessor,
+        ISyncItemsRepositoryAccessor syncItemsRepositoryAccessor,
+        IUnitOfWork unitOfWork, IS3Service s3Service, SyncDeviceService syncDeviceService, WampServiceAccessor serviceAccessor, ILogger<UserService> logger) : IUserService
+    {
+        private static readonly System.Security.Cryptography.RandomNumberGenerator Rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+        private readonly HttpClient httpClient = new();
+        private IHttpContextAccessor HttpContextAccessor { get; } = accessor;
+        private ISyncItemsRepositoryAccessor Repositories { get; } = syncItemsRepositoryAccessor;
+        private IS3Service S3Service { get; set; } = s3Service;
+        private readonly IUnitOfWork unit = unitOfWork;
+
+        public async Task<SignupResponse> CreateUserAsync(SignupForm form)
+        {
+            SignupResponse response = await serviceAccessor.UserAccountService.CreateUserAsync(form.ClientId, form.Email, form.Password, HttpContextAccessor.HttpContext?.Request.Headers["User-Agent"].ToString());
+
+            if ((response.Errors != null && response.Errors.Length > 0) || response.UserId == null)
+            {
+                logger.LogError("Failed to sign up user: {Response}", JsonSerializer.Serialize(response));
+                if (response.Errors != null && response.Errors.Length > 0)
+                    throw new Exception(string.Join(" ", response.Errors));
+                else throw new Exception("Could not create a new account.");
+            }
+
+            await Repositories.UsersSettings.InsertAsync(new UserSettings
+            {
+                UserId = response.UserId,
+                StorageLimit = new Limit { UpdatedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), Value = 0 },
+                LastSynced = 0,
+                Salt = GetSalt()
+            });
+
+            if (!Constants.IS_SELF_HOSTED)
+            {
+                await WampServers.SubscriptionServer.PublishMessageAsync(SubscriptionServerTopics.CreateSubscriptionV2Topic, new CreateSubscriptionMessageV2
+                {
+                    AppId = ApplicationType.NOTESNOOK,
+                    Provider = SubscriptionProvider.STREETWRITERS,
+                    Status = SubscriptionStatus.ACTIVE,
+                    Plan = SubscriptionPlan.FREE,
+                    UserId = response.UserId,
+                    StartTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                });
+            }
+
+            return response;
+        }
+
+        public async Task<UserResponse> GetUserAsync(string userId)
+        {
+            var user = await serviceAccessor.UserAccountService.GetUserAsync(Clients.Notesnook.Id, userId) ?? throw new Exception("User not found.");
+
+            Subscription? subscription = null;
+            if (Constants.IS_SELF_HOSTED)
+            {
+                subscription = new Subscription
+                {
+                    AppId = ApplicationType.NOTESNOOK,
+                    Provider = SubscriptionProvider.STREETWRITERS,
+                    Plan = SubscriptionPlan.BELIEVER,
+                    Status = SubscriptionStatus.ACTIVE,
+                    UserId = user.UserId,
+                    StartDate = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    // this date doesn't matter as the subscription is static.
+                    ExpiryDate = DateTimeOffset.UtcNow.AddYears(1).ToUnixTimeMilliseconds()
+                };
+            }
+            else
+            {
+                subscription = await serviceAccessor.UserSubscriptionService.GetUserSubscriptionAsync(Clients.Notesnook.Id, userId) ?? throw new Exception("User subscription not found.");
+            }
+
+            var userSettings = await Repositories.UsersSettings.FindOneAsync((u) => u.UserId == user.UserId) ?? throw new Exception("User settings not found.");
+
+            // reset user's attachment limit every month
+            var limit = StorageHelper.RolloverStorageLimit(userSettings.StorageLimit);
+            if (userSettings.StorageLimit == null || limit.UpdatedAt != userSettings.StorageLimit?.UpdatedAt)
+            {
+                userSettings.StorageLimit = limit;
+                await Repositories.UsersSettings.Collection.UpdateOneAsync(
+                    Builders<UserSettings>.Filter.Eq(u => u.UserId, user.UserId),
+                    Builders<UserSettings>.Update.Set(u => u.StorageLimit, userSettings.StorageLimit)
+                );
+            }
+
+            return new UserResponse
+            {
+                UserId = user.UserId,
+                Email = user.Email,
+                IsEmailConfirmed = user.IsEmailConfirmed,
+                MarketingConsent = user.MarketingConsent,
+                MFA = user.MFA,
+                PhoneNumber = user.PhoneNumber,
+                AttachmentsKey = userSettings.AttachmentsKey,
+                MonographPasswordsKey = userSettings.MonographPasswordsKey,
+                DataEncryptionKey = userSettings.DataEncryptionKey,
+                LegacyDataEncryptionKey = userSettings.LegacyDataEncryptionKey,
+                InboxKeys = userSettings.InboxKeys,
+                Salt = userSettings.Salt,
+                Subscription = subscription,
+                StorageUsed = userSettings.StorageLimit.Value,
+                TotalStorage = StorageHelper.GetStorageLimitForPlan(subscription),
+                Success = true,
+                StatusCode = 200
+            };
+        }
+
+        public async Task SetUserKeysAsync(string userId, UserKeys keys)
+        {
+            var userSettings = await Repositories.UsersSettings.FindOneAsync((u) => u.UserId == userId) ?? throw new Exception("User not found.");
+
+            if (keys.AttachmentsKey != null)
+            {
+                userSettings.AttachmentsKey = keys.AttachmentsKey;
+            }
+            if (keys.MonographPasswordsKey != null)
+            {
+                userSettings.MonographPasswordsKey = keys.MonographPasswordsKey;
+            }
+            if (keys.DataEncryptionKey != null)
+                userSettings.DataEncryptionKey = keys.DataEncryptionKey;
+            if (keys.LegacyDataEncryptionKey != null)
+                userSettings.LegacyDataEncryptionKey = keys.LegacyDataEncryptionKey;
+
+            if (keys.InboxKeys != null)
+            {
+                if (keys.InboxKeys.Public == null || keys.InboxKeys.Private == null)
+                {
+                    userSettings.InboxKeys = null;
+                    await Repositories.InboxApiKey.DeleteManyAsync(t => t.UserId == userId);
+                }
+                else
+                {
+                    userSettings.InboxKeys = keys.InboxKeys;
+                }
+
+                await Repositories.InboxItems.DeleteManyAsync(t => t.UserId == userId);
+                await WampServers.MessengerServer.PublishMessageAsync(MessengerServerTopics.SendSSETopic, new SendSSEMessage
+                {
+                    OriginTokenId = null,
+                    UserId = userId,
+                    Message = new Message
+                    {
+                        Type = "inboxUpdated",
+                        Data = JsonSerializer.Serialize(new { reason = "Inbox PGP keys added, updated, or removed." })
+                    }
+                });
+            }
+
+            await Repositories.UsersSettings.UpdateAsync(userSettings.Id, userSettings);
+        }
+
+        public async Task<EncryptedData?> GetEncryptionVerifier(string userId)
+        {
+            SyncItemsRepository[] repositories = [Repositories.Notes, Repositories.Notebooks, Repositories.Shortcuts, Repositories.Contents, Repositories.Settings, Repositories.LegacySettings, Repositories.Attachments, Repositories.Reminders, Repositories.Relations, Repositories.Colors, Repositories.Tags, Repositories.Vaults, Repositories.InboxItemsHistory];
+            foreach (var repo in repositories)
+            {
+                var item = await repo.FindOneAsync((s) => s.UserId == userId && (s.KeyVersion == null || s.KeyVersion == 0));
+                if (item != null)
+                {
+                    return new EncryptedData
+                    {
+                        Cipher = item.Cipher,
+                        IV = item.IV,
+                        Salt = "",
+                        Length = item.Length
+                    };
+                }
+            }
+            return null;
+        }
+
+        public async Task DeleteUserAsync(string userId)
+        {
+            logger.LogInformation("Deleting user {UserId}", userId);
+            var cc = new CancellationTokenSource();
+
+            Repositories.Notes.DeleteByUserId(userId);
+            Repositories.Notebooks.DeleteByUserId(userId);
+            Repositories.Shortcuts.DeleteByUserId(userId);
+            Repositories.Contents.DeleteByUserId(userId);
+            Repositories.Settings.DeleteByUserId(userId);
+            Repositories.LegacySettings.DeleteByUserId(userId);
+            Repositories.Attachments.DeleteByUserId(userId);
+            Repositories.Reminders.DeleteByUserId(userId);
+            Repositories.Relations.DeleteByUserId(userId);
+            Repositories.Colors.DeleteByUserId(userId);
+            Repositories.Tags.DeleteByUserId(userId);
+            Repositories.Vaults.DeleteByUserId(userId);
+            Repositories.InboxItemsHistory.DeleteByUserId(userId);
+            Repositories.UsersSettings.Delete((u) => u.UserId == userId);
+            Repositories.Monographs.DeleteMany((m) => m.UserId == userId);
+            Repositories.InboxApiKey.DeleteMany((t) => t.UserId == userId);
+
+            var result = await unit.Commit();
+            logger.LogInformation("User data deleted for user {UserId}: {Result}", userId, result);
+            if (!result) throw new Exception("Could not delete user data.");
+
+            await syncDeviceService.ResetDevicesAsync(userId);
+
+            if (!Constants.IS_SELF_HOSTED)
+            {
+                await WampServers.SubscriptionServer.PublishMessageAsync(SubscriptionServerTopics.DeleteSubscriptionTopic, new DeleteSubscriptionMessage
+                {
+                    AppId = ApplicationType.NOTESNOOK,
+                    UserId = userId
+                });
+            }
+
+            await S3Service.DeleteDirectoryAsync(userId);
+        }
+
+        public async Task DeleteUserAsync(string userId, string? jti, string password)
+        {
+            logger.LogInformation("Deleting user account: {UserId}", userId);
+
+            await serviceAccessor.UserAccountService.DeleteUserAsync(Clients.Notesnook.Id, userId, password);
+
+            await DeleteUserAsync(userId);
+
+            await WampServers.MessengerServer.PublishMessageAsync(MessengerServerTopics.SendSSETopic, new SendSSEMessage
+            {
+                SendToAll = jti == null,
+                OriginTokenId = jti,
+                UserId = userId,
+                Message = new Message
+                {
+                    Type = "logout",
+                    Data = JsonSerializer.Serialize(new { reason = "Account deleted." })
+                }
+            });
+
+        }
+
+        public async Task<bool> ResetUserAsync(string userId, bool removeAttachments)
+        {
+
+            var cc = new CancellationTokenSource();
+
+            Repositories.Notes.DeleteByUserId(userId);
+            Repositories.Notebooks.DeleteByUserId(userId);
+            Repositories.Shortcuts.DeleteByUserId(userId);
+            Repositories.Contents.DeleteByUserId(userId);
+            Repositories.Settings.DeleteByUserId(userId);
+            Repositories.LegacySettings.DeleteByUserId(userId);
+            Repositories.Attachments.DeleteByUserId(userId);
+            Repositories.Reminders.DeleteByUserId(userId);
+            Repositories.Relations.DeleteByUserId(userId);
+            Repositories.Colors.DeleteByUserId(userId);
+            Repositories.Tags.DeleteByUserId(userId);
+            Repositories.Vaults.DeleteByUserId(userId);
+            Repositories.InboxItemsHistory.DeleteByUserId(userId);
+            Repositories.Monographs.DeleteMany((m) => m.UserId == userId);
+            Repositories.InboxApiKey.DeleteMany((t) => t.UserId == userId);
+            if (!await unit.Commit()) return false;
+
+            await syncDeviceService.ResetDevicesAsync(userId);
+
+            var userSettings = await Repositories.UsersSettings.FindOneAsync((s) => s.UserId == userId);
+
+            userSettings.AttachmentsKey = null;
+            userSettings.MonographPasswordsKey = null;
+            userSettings.DataEncryptionKey = null;
+            userSettings.LegacyDataEncryptionKey = null;
+            userSettings.VaultKey = null;
+            userSettings.InboxKeys = null;
+            userSettings.LastSynced = 0;
+
+            await Repositories.UsersSettings.UpsertAsync(userSettings, (s) => s.UserId == userId);
+
+            if (removeAttachments)
+                await S3Service.DeleteDirectoryAsync(userId);
+
+            return true;
+        }
+
+        private static string GetSalt()
+        {
+            byte[] salt = new byte[16];
+            Rng.GetNonZeroBytes(salt);
+            return Convert.ToBase64String(salt).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        }
+    }
+}

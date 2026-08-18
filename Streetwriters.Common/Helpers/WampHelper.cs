@@ -1,0 +1,68 @@
+/*
+This file is part of the Notesnook Sync Server project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the Affero GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+Affero GNU General Public License for more details.
+
+You should have received a copy of the Affero GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+using System.Collections.Generic;
+using System.Reactive.Subjects;
+using System.Threading.Tasks;
+using Streetwriters.Common.Messages;
+using WampSharp.V2;
+using WampSharp.V2.Client;
+
+namespace Streetwriters.Common.Helpers
+{
+    public class WampHelper
+    {
+        public static async Task<IWampChannel> OpenWampChannelAsync(string server, string realmName)
+        {
+            DefaultWampChannelFactory channelFactory = new();
+
+            IWampChannel channel = channelFactory.CreateJsonChannel(server, realmName);
+
+            var isConnected = false;
+            while (!isConnected)
+            {
+                try
+                {
+                    await channel.Open();
+                    isConnected = true;
+                }
+                catch
+                {
+                    await Task.Delay(5000);
+                    continue;
+                }
+            }
+
+            return channel;
+        }
+
+        public static void PublishMessage<T>(IWampRealmProxy realm, string topicName, T message)
+        {
+            var subject = realm.Services.GetSubject<T>(topicName);
+            subject.OnNext(message);
+        }
+
+        public static void PublishMessages<T>(IWampRealmProxy realm, string topicName, IEnumerable<T> messages)
+        {
+            var subject = realm.Services.GetSubject<T>(topicName);
+            foreach (var message in messages)
+                subject.OnNext(message);
+        }
+    }
+}
