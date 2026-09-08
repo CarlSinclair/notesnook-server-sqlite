@@ -24,7 +24,6 @@ using System.Threading.Tasks;
 using AngleSharp.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using MongoDB.Driver;
 using Notesnook.API.Accessors;
 using Notesnook.API.Models;
 using Streetwriters.Common;
@@ -44,17 +43,10 @@ namespace Notesnook.API.Controllers
         [AllowAnonymous]
         public async Task<IActionResult> GetActiveAnnouncements([FromQuery] string? userId)
         {
-            var filter = Builders<Announcement>.Filter.Eq(x => x.IsActive, true);
-            if (!string.IsNullOrEmpty(userId))
-            {
-                var userFilter = Builders<Announcement>.Filter.Or(
-                    Builders<Announcement>.Filter.Eq(x => x.UserIds, null),
-                    Builders<Announcement>.Filter.Size(x => x.UserIds, 0),
-                    Builders<Announcement>.Filter.AnyEq(x => x.UserIds, userId)
-                );
-                filter = Builders<Announcement>.Filter.And(filter, userFilter);
-            }
-            var userAnnouncements = await announcements.Collection.Find(filter).ToListAsync();
+            var userAnnouncements = (await announcements.FindAsync(x => x.IsActive))
+                .Where(a => string.IsNullOrEmpty(userId)
+                    || a.UserIds == null || a.UserIds.Length == 0 || a.UserIds.Contains(userId))
+                .ToList();
             foreach (var announcement in userAnnouncements)
             {
                 if (userId != null && announcement.UserIds != null && !announcement.UserIds.Contains(userId)) continue;

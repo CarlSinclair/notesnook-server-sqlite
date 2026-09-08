@@ -18,8 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using System.Runtime.Serialization;
 
 namespace Notesnook.API.Models

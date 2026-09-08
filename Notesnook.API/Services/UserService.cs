@@ -25,7 +25,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using MongoDB.Driver;
 using Notesnook.API.Helpers;
 using Notesnook.API.Interfaces;
 using Notesnook.API.Models;
@@ -120,10 +119,7 @@ namespace Notesnook.API.Services
             if (userSettings.StorageLimit == null || limit.UpdatedAt != userSettings.StorageLimit?.UpdatedAt)
             {
                 userSettings.StorageLimit = limit;
-                await Repositories.UsersSettings.Collection.UpdateOneAsync(
-                    Builders<UserSettings>.Filter.Eq(u => u.UserId, user.UserId),
-                    Builders<UserSettings>.Update.Set(u => u.StorageLimit, userSettings.StorageLimit)
-                );
+                await Repositories.UsersSettings.UpdateAsync(userSettings);
             }
 
             return new UserResponse
@@ -190,7 +186,7 @@ namespace Notesnook.API.Services
                 });
             }
 
-            await Repositories.UsersSettings.UpdateAsync(userSettings.Id, userSettings);
+            await Repositories.UsersSettings.UpdateAsync(userSettings);
         }
 
         public async Task<EncryptedData?> GetEncryptionVerifier(string userId)

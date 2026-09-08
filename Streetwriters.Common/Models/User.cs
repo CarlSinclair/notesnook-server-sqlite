@@ -19,11 +19,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 
 
-using AspNetCore.Identity.Mongo.Model;
+using System.Collections.Generic;
+using Microsoft.AspNetCore.Identity;
 
 namespace Streetwriters.Common.Models
 {
-    public class User : MongoUser
+    public class User : IdentityUser
     {
+        // Preserves the old MongoUser.Claims embedded list. Mapped to AspNetUserClaims
+        // in IdentityDbContext and populated on access via lazy-loading proxies.
+        public virtual List<IdentityUserClaim<string>> Claims { get; set; } = [];
     }
 }

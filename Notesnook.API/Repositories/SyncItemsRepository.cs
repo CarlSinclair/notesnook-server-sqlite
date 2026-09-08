@@ -20,104 +20,117 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
-using IdentityModel;
-using Microsoft.VisualBasic;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using MongoDB.Bson;
-using MongoDB.Driver;
-using Notesnook.API.Hubs;
-using Notesnook.API.Interfaces;
+using Notesnook.API.Data;
 using Notesnook.API.Models;
-using Streetwriters.Common;
-using Streetwriters.Data.DbContexts;
 using Streetwriters.Data.Interfaces;
 using Streetwriters.Data.Repositories;
-using AspNetCore.Identity.Mongo.Mongo;
 
 namespace Notesnook.API.Repositories
 {
+    /// <summary>
+    /// Repository for one logical sync collection (notes, notebooks, content, ...).
+    /// All logical collections share a single <c>sync_items</c> table, discriminated
+    /// by <see cref="SyncItem.Type"/>. Was one <c>IMongoCollection&lt;SyncItem&gt;</c> per collection.
+    /// </summary>
     public class SyncItemsRepository : Repository<SyncItem>
     {
-        private readonly string collectionName;
+        private const int MaxItemBytes = 15 * 1024 * 1024;
+
+        private readonly string type;
+        private readonly NotesnookDbContext context;
         private readonly ILogger<SyncItemsRepository> logger;
-        public SyncItemsRepository(IDbContext dbContext, IMongoCollection<SyncItem> collection, ILogger<SyncItemsRepository> logger) : base(dbContext, collection)
+
+        private static readonly HashSet<string> ALGORITHMS = [Algorithms.Default];
+
+        public SyncItemsRepository(IDbContext dbContext, NotesnookDbContext db, string type, ILogger<SyncItemsRepository> logger)
+            : base(dbContext, db)
         {
-            this.collectionName = collection.CollectionNamespace.CollectionName;
+            this.type = type;
+            this.context = db;
             this.logger = logger;
         }
 
-        private readonly List<string> ALGORITHMS = [Algorithms.Default];
-        private bool IsValidAlgorithm(string algorithm)
+        /// <summary>
+        /// Streams items for a user. When <paramref name="all"/> is false, restricted
+        /// to <paramref name="ids"/>. <paramref name="batchSize"/> is advisory.
+        /// </summary>
+        public async IAsyncEnumerable<SyncItem> FindItemsById(
+            string userId, IEnumerable<string> ids, bool all, int batchSize)
         {
-            return ALGORITHMS.Contains(algorithm);
-        }
+            IQueryable<SyncItem> query = context.SyncItems.AsNoTracking()
+                .Where(i => i.UserId == userId && i.Type == type);
 
-        public Task<IAsyncCursor<SyncItem>> FindItemsById(string userId, IEnumerable<string> ids, bool all, int batchSize)
-        {
-            var filters = new List<FilterDefinition<SyncItem>>(new[] { Builders<SyncItem>.Filter.Eq("UserId", userId) });
-
-            if (!all) filters.Add(Builders<SyncItem>.Filter.In("ItemId", ids));
-
-            return Collection.FindAsync(Builders<SyncItem>.Filter.And(filters), new FindOptions<SyncItem>
+            if (!all)
             {
-                BatchSize = batchSize,
-                AllowDiskUse = true,
-                AllowPartialResults = false,
-                NoCursorTimeout = true
-            });
+                var idList = ids as ICollection<string> ?? ids.ToList();
+                if (idList.Count == 0) yield break;
+                query = query.Where(i => idList.Contains(i.ItemId!));
+            }
+
+            await foreach (var item in query.AsAsyncEnumerable())
+                yield return item;
         }
 
         public void DeleteByUserId(string userId)
         {
-            var filter = Builders<SyncItem>.Filter.Eq("UserId", userId);
-            dbContext.AddCommand((handle, ct) => Collection.DeleteManyAsync(handle, filter, null, ct));
+            dbContext.AddCommand(ct =>
+                context.SyncItems.Where(i => i.UserId == userId && i.Type == type).ExecuteDeleteAsync(ct));
         }
 
+        /// <summary>
+        /// Buffered batch upsert into <c>sync_items</c>. Validates each item exactly as
+        /// the Mongo version did, then enqueues an ON CONFLICT upsert executed inside
+        /// the unit-of-work transaction.
+        /// </summary>
         public void UpsertMany(IEnumerable<SyncItem> items, string userId)
         {
-            var userIdFilter = Builders<SyncItem>.Filter.Eq("UserId", userId);
-            var writes = new List<WriteModel<SyncItem>>();
+            var toWrite = new List<SyncItem>();
             foreach (var item in items)
             {
-                if (item.Length > 15 * 1024 * 1024)
-                {
+                if (item.Length > MaxItemBytes)
                     throw new Exception($"Size of item \"{item.ItemId}\" is too large. Maximum allowed size is 15 MB.");
-                }
-
-                if (!IsValidAlgorithm(item.Algorithm))
-                {
+                if (!ALGORITHMS.Contains(item.Algorithm))
                     throw new Exception($"Invalid alg identifier {item.Algorithm}");
-                }
-
-                // Handle case where the cipher is corrupted.
                 if (!IsBase64String(item.Cipher))
                 {
                     logger.LogError("Corrupted item {ItemId} in collection {CollectionName}. Length: {Length}, Cipher: {Cipher}",
-                        item.ItemId, this.collectionName, item.Length, item.Cipher);
-                    throw new Exception($"Corrupted item \"{item.ItemId}\" in collection \"{this.collectionName}\". Please report this error to support@streetwriters.co.");
+                        item.ItemId, type, item.Length, item.Cipher);
+                    throw new Exception($"Corrupted item \"{item.ItemId}\" in collection \"{type}\". Please report this error to support@streetwriters.co.");
                 }
-
                 if (item.ItemId == null)
-                    throw new Exception($"Item does not have an ItemId.");
+                    throw new Exception("Item does not have an ItemId.");
 
-                var filter = Builders<SyncItem>.Filter.And(
-                    userIdFilter,
-                    Builders<SyncItem>.Filter.Eq("ItemId", item.ItemId)
-                );
-
-                item.DateSynced = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 item.UserId = userId;
-
-                writes.Add(new ReplaceOneModel<SyncItem>(filter, item)
-                {
-                    IsUpsert = true
-                });
+                item.Type = type;
+                item.DateSynced = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                toWrite.Add(item);
             }
-            dbContext.AddCommand((handle, ct) => Collection.BulkWriteAsync(handle, writes, options: new BulkWriteOptions { IsOrdered = false }, ct));
+
+            if (toWrite.Count == 0) return;
+
+            dbContext.AddCommand(async ct =>
+            {
+                const string sql =
+                    "INSERT INTO sync_items " +
+                    "(UserId, Type, ItemId, IV, Cipher, Length, Version, Algorithm, KeyVersion, DateSynced) " +
+                    "VALUES ({0},{1},{2},{3},{4},{5},{6},{7},{8},{9}) " +
+                    "ON CONFLICT(UserId, Type, ItemId) DO UPDATE SET " +
+                    "IV=excluded.IV, Cipher=excluded.Cipher, Length=excluded.Length, " +
+                    "Version=excluded.Version, Algorithm=excluded.Algorithm, " +
+                    "KeyVersion=excluded.KeyVersion, DateSynced=excluded.DateSynced";
+
+                foreach (var i in toWrite)
+                {
+                    object?[] p =
+                    [
+                        i.UserId!, i.Type, i.ItemId!, i.IV, i.Cipher, i.Length, i.Version,
+                        i.Algorithm, i.KeyVersion, i.DateSynced
+                    ];
+                    await context.Database.ExecuteSqlRawAsync(sql, p, ct);
+                }
+            });
         }
 
         private static bool IsBase64String(string value)
@@ -125,10 +138,8 @@ namespace Notesnook.API.Repositories
             if (value == null || value.Length == 0 || value.Contains(' ') || value.Contains('\t') || value.Contains('\r') || value.Contains('\n'))
                 return false;
             var index = value.Length - 1;
-            if (value[index] == '=')
-                index--;
-            if (value[index] == '=')
-                index--;
+            if (value[index] == '=') index--;
+            if (value[index] == '=') index--;
             for (var i = 0; i <= index; i++)
                 if (IsInvalidBase64Char(value[i]))
                     return false;
@@ -138,16 +149,9 @@ namespace Notesnook.API.Repositories
         private static bool IsInvalidBase64Char(char value)
         {
             var code = (int)value;
-            // 1 - 9
-            if (code >= 48 && code <= 57)
-                return false;
-            // A - Z
-            if (code >= 65 && code <= 90)
-                return false;
-            // a - z
-            if (code >= 97 && code <= 122)
-                return false;
-            // - & _
+            if (code >= 48 && code <= 57) return false;
+            if (code >= 65 && code <= 90) return false;
+            if (code >= 97 && code <= 122) return false;
             return code != 45 && code != 95;
         }
     }

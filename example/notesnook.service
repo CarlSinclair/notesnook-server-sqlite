@@ -1,0 +1,47 @@
+[Unit]
+Description=Notesnook sync stack (Identity + API [+ SSE]) — single unit
+Documentation=file:/opt/notesnook/example/SETUP.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=notesnook
+Group=notesnook
+WorkingDirectory=/opt/notesnook
+Environment=APP_ROOT=/opt/notesnook
+# SSE ("Events") server — the Notesnook client requires it (probes /version for id "sse").
+Environment=RUN_SSE=1
+ExecStart=/opt/notesnook/run.sh
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+# One unit, many child PIDs: SIGTERM the supervisor, then SIGKILL the cgroup.
+KillMode=mixed
+
+# --- Resource ceiling -------------------------------------------------------
+# Identity + API steady ~150-250 MB. 512M gives first-run migration headroom.
+# Bump to 640M if you set RUN_SSE=1.
+MemoryMax=640M
+MemoryHigh=560M
+TasksMax=512
+
+# --- Hardening ------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/notesnook/data /opt/notesnook/logs /opt/notesnook/identity/keystore
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

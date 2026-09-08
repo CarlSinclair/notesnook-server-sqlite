@@ -24,7 +24,6 @@ using System.Linq;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.Tasks;
-using AspNetCore.Identity.Mongo.Model;
 using IdentityServer4.Extensions;
 using IdentityServer4.Stores;
 using Microsoft.AspNetCore.Authorization;
@@ -66,7 +65,7 @@ namespace Streetwriters.Identity.Controllers
             UserManager<User> _userManager,
             ITemplatedEmailSender _emailSender,
             SignInManager<User> _signInManager,
-            RoleManager<MongoRole> _roleManager,
+            RoleManager<Role> _roleManager,
             IPersistedGrantStore store,
             ITokenGenerationService tokenGenerationService,
             IMFAService _mfaService,

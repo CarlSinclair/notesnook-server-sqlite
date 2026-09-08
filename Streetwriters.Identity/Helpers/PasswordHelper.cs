@@ -25,16 +25,43 @@ namespace Streetwriters.Identity.Helpers
 {
     internal class PasswordHelper
     {
+        // libsodium's crypto_pwhash_str output buffer (crypto_pwhash_STRBYTES).
+        const int HASH_BUFFER = 128;
+
         public static bool VerifyPassword(string password, string hash)
         {
-            return Argon2id.VerifyHash(Encoding.UTF8.GetBytes(hash), Encoding.UTF8.GetBytes(password));
+            // The stored value is an ASCII PHC string ("$argon2id$v=19$m=...").
+            // libsodium's verifier wants a 128-byte, NUL-terminated buffer, so
+            // re-pad whatever came back from the database (embedded NULs do not
+            // round-trip through SQLite TEXT, so the stored string is the bare
+            // PHC string with the padding stripped — or, historically, the full
+            // 128 bytes).
+            var raw = Encoding.UTF8.GetBytes(hash);
+            Span<byte> buffer = stackalloc byte[HASH_BUFFER];
+            buffer.Clear();
+            raw.AsSpan(0, Math.Min(raw.Length, HASH_BUFFER)).CopyTo(buffer);
+
+            try
+            {
+                return Argon2id.VerifyHash(buffer, Encoding.UTF8.GetBytes(password));
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public static string CreatePasswordHash(string password)
         {
-            Span<byte> hash = new(new byte[128]);
+            if (password.Length == 0) throw new ArgumentException("Password must not be empty.", nameof(password));
+            Span<byte> hash = stackalloc byte[HASH_BUFFER];
             Argon2id.ComputeHash(hash, Encoding.UTF8.GetBytes(password), 3, 65536);
-            return Encoding.UTF8.GetString(hash);
+
+            // Strip libsodium's NUL padding before it goes into a SQLite TEXT
+            // column — otherwise the embedded NUL truncates/mangles the value on
+            // the way back out and verification of a *correct* password fails.
+            var nul = hash.IndexOf((byte)0);
+            return Encoding.UTF8.GetString(hash[..(nul >= 0 ? nul : hash.Length)]);
         }
     }
 }

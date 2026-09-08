@@ -25,7 +25,6 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using MongoDB.Bson;
 using Notesnook.API.Authorization;
 using Notesnook.API.Models;
 using Notesnook.API.Services;
@@ -37,6 +36,7 @@ namespace Notesnook.API.Controllers
 {
     [ApiController]
     [Route("inbox")]
+    [RequiresFeature("inbox")]
     public class InboxController(
             Repository<InboxApiKey> inboxApiKeysRepository,
             Repository<UserSettings> userSettingsRepository,
@@ -166,7 +166,7 @@ namespace Notesnook.API.Controllers
                 }
 
                 request.UserId = userId;
-                request.ItemId = ObjectId.GenerateNewId().ToString();
+                request.ItemId = System.Guid.NewGuid().ToString("N");
                 await inboxItemsRepository.InsertAsync(request);
                 await syncDeviceService.AddIdsToAllDevicesAsync(userId, [new(request.ItemId, "inbox_item")]);
                 await WampServers.MessengerServer.PublishMessageAsync(MessengerServerTopics.SendSSETopic, new SendSSEMessage

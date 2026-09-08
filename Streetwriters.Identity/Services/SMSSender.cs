@@ -17,62 +17,25 @@ You should have received a copy of the Affero GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-using Streetwriters.Identity.Interfaces;
-using Streetwriters.Common.Interfaces;
-using Streetwriters.Common;
-using Twilio.Rest.Verify.V2.Service;
-using Twilio;
 using System.Threading.Tasks;
-using System;
 using Microsoft.Extensions.Logging;
+using Streetwriters.Common.Interfaces;
+using Streetwriters.Identity.Interfaces;
 
 namespace Streetwriters.Identity.Services
 {
-    public class SMSSender : ISMSSender
+    /// <summary>
+    /// SMS 2FA is not supported on this build (the Twilio SDK is not bundled).
+    /// Use an authenticator app or email 2FA instead.
+    /// </summary>
+    public class SMSSender(ILogger<SMSSender> logger) : ISMSSender
     {
-        private readonly ILogger<SMSSender> Logger;
-        public SMSSender(ILogger<SMSSender> logger)
+        public Task<string?> SendOTPAsync(string number, IClient app)
         {
-            Logger = logger;
-            if (!string.IsNullOrEmpty(Constants.TWILIO_ACCOUNT_SID) && !string.IsNullOrEmpty(Constants.TWILIO_AUTH_TOKEN))
-            {
-                TwilioClient.Init(Constants.TWILIO_ACCOUNT_SID, Constants.TWILIO_AUTH_TOKEN);
-            }
+            logger.LogWarning("SMS 2FA requested but not supported on this build.");
+            return Task.FromResult<string?>(null);
         }
 
-        public async Task<string?> SendOTPAsync(string number, IClient app)
-        {
-            try
-            {
-                var verification = await VerificationResource.CreateAsync(
-                    to: number,
-                    channel: "sms",
-                    pathServiceSid: Constants.TWILIO_SERVICE_SID
-                );
-                return verification.Sid;
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError(ex, "Error sending OTP with Twilio");
-                return null;
-            }
-        }
-
-        public async Task<bool> VerifyOTPAsync(string id, string code)
-        {
-            try
-            {
-                return (await VerificationCheckResource.CreateAsync(
-                    verificationSid: id,
-                    pathServiceSid: Constants.TWILIO_SERVICE_SID,
-                    code: code
-                )).Status == "approved";
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError(ex, "Error verifying OTP with Twilio");
-                return false;
-            }
-        }
+        public Task<bool> VerifyOTPAsync(string id, string code) => Task.FromResult(false);
     }
 }

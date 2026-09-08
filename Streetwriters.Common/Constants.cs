@@ -25,6 +25,12 @@ namespace Streetwriters.Common
     {
         public static int COMPATIBILITY_VERSION = 1;
         public static bool IS_SELF_HOSTED => ReadSecret("SELF_HOSTED") == "1";
+
+        // Optional feature toggles, both on unless explicitly set to "false".
+        // Monograph publishing works in-process; public page rendering needs the
+        // separate monograph-server. Inbox is fully in-process.
+        public static bool ENABLE_MONOGRAPHS => ReadSecret("ENABLE_MONOGRAPHS") != "false";
+        public static bool ENABLE_INBOX => ReadSecret("ENABLE_INBOX") != "false";
         public static bool DISABLE_SIGNUPS => ReadSecret("DISABLE_SIGNUPS") == "true";
         public static string INSTANCE_NAME => ReadSecret("INSTANCE_NAME") ?? "default";
 
@@ -72,8 +78,11 @@ namespace Streetwriters.Common
 
         // internal
         public static string? WEBRISK_API_URI => ReadSecret("WEBRISK_API_URI");
-        public static string MONGODB_CONNECTION_STRING => ReadSecret("MONGODB_CONNECTION_STRING") ?? throw new ArgumentNullException("MONGODB_CONNECTION_STRING environment variable is not set");
-        public static string MONGODB_DATABASE_NAME => ReadSecret("MONGODB_DATABASE_NAME") ?? throw new ArgumentNullException("MONGODB_DATABASE_NAME environment variable is not set");
+        // SQLite backend. DB_CONNECTION_STRING wins; otherwise built from DB_PATH
+        // (default: data/notesnook.db under the app content root). One file holds
+        // every EF context (sync + Identity + IdentityServer operational store).
+        public static string DB_CONNECTION_STRING => ReadSecret("DB_CONNECTION_STRING")
+            ?? $"Data Source={ReadSecret("DB_PATH") ?? "data/notesnook.db"}";
         public static int SUBSCRIPTIONS_SERVER_PORT => int.Parse(ReadSecret("SUBSCRIPTIONS_SERVER_PORT") ?? "80");
         public static string? SUBSCRIPTIONS_SERVER_HOST => ReadSecret("SUBSCRIPTIONS_SERVER_HOST");
         public static string? SUBSCRIPTIONS_CERT_PATH => ReadSecret("SUBSCRIPTIONS_CERT_PATH");

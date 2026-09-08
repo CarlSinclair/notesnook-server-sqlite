@@ -25,7 +25,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
-using MongoDB.Driver;
 using Notesnook.API.Helpers;
 using Notesnook.API.Interfaces;
 using Notesnook.API.Models;
@@ -85,10 +84,7 @@ namespace Notesnook.API.Controllers
             var uploadedFileSize = await UploadFileAsync(userId, name, fileSize);
 
             userSettings.StorageLimit.Value += uploadedFileSize;
-            await repositories.UsersSettings.Collection.UpdateOneAsync(
-                Builders<UserSettings>.Filter.Eq(u => u.UserId, userId),
-                Builders<UserSettings>.Update.Set(u => u.StorageLimit, userSettings.StorageLimit)
-            );
+            await repositories.UsersSettings.UpdateAsync(userSettings);
 
             // extra check in case user sets wrong ContentLength in the HTTP header
             if (uploadedFileSize != fileSize && StorageHelper.IsStorageLimitReached(subscription, userSettings.StorageLimit.Value))

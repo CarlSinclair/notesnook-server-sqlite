@@ -18,8 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using NanoidDotNet;
 
 namespace Notesnook.API.Models
@@ -41,9 +39,6 @@ namespace Notesnook.API.Models
             Key = "nn__" + random;
         }
 
-        [BsonId]
-        [BsonIgnoreIfDefault]
-        [BsonRepresentation(BsonType.ObjectId)]
         [JsonIgnore]
         [MessagePack.IgnoreMember]
         public string Id { get; set; } = string.Empty;

@@ -70,7 +70,9 @@ namespace Streetwriters.Identity
                     RequirePkce = false,
                     RequireClientSecret = false,
                     RequireConsent = false,
-                    AccessTokenType = AccessTokenType.Reference,
+                    // Self-contained JWTs — the API validates them locally against our
+                    // signing keys instead of calling /connect/introspect on every request.
+                    AccessTokenType = AccessTokenType.Jwt,
                     AllowOfflineAccess = true,
                     UpdateAccessTokenClaimsOnRefresh = true,
                     RefreshTokenUsage = TokenUsage.ReUse,

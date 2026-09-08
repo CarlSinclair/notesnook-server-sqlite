@@ -20,7 +20,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using System.Collections.Generic;
 using System.Text.Encodings.Web;
 using System.Threading.Tasks;
-using AspNetCore.Identity.Mongo.Model;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -35,7 +34,7 @@ namespace Streetwriters.Identity.Controllers
     {
         protected UserManager<User> UserManager { get; set; }
         protected SignInManager<User> SignInManager { get; set; }
-        protected RoleManager<MongoRole> RoleManager { get; set; }
+        protected RoleManager<Role> RoleManager { get; set; }
         protected ITemplatedEmailSender EmailSender { get; set; }
         protected UrlEncoder UrlEncoder { get; set; }
         protected IMFAService MFAService { get; set; }
@@ -43,7 +42,7 @@ namespace Streetwriters.Identity.Controllers
             UserManager<User> _userManager,
             ITemplatedEmailSender _emailSender,
             SignInManager<User> _signInManager,
-            RoleManager<MongoRole> _roleManager,
+            RoleManager<Role> _roleManager,
             IMFAService _mfaService
         )
         {

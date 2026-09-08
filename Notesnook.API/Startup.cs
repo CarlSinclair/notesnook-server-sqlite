@@ -45,8 +45,10 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using MongoDB.Bson.Serialization;
+using Microsoft.EntityFrameworkCore;
+using Streetwriters.Data.Sqlite;
 using Notesnook.API.Accessors;
+using Notesnook.API.Data;
 using Notesnook.API.Authorization;
 using Notesnook.API.Extensions;
 using Notesnook.API.Hubs;
@@ -55,8 +57,6 @@ using Notesnook.API.Jobs;
 using Notesnook.API.Models;
 using Notesnook.API.Repositories;
 using Notesnook.API.Services;
-using OpenTelemetry.Metrics;
-using OpenTelemetry.Resources;
 using Quartz;
 using Streetwriters.Common;
 using Streetwriters.Common.Extensions;
@@ -83,11 +83,8 @@ namespace Notesnook.API
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
-            services.AddSingleton(MongoDbContext.CreateMongoDbClient(new DbSettings
-            {
-                ConnectionString = Constants.MONGODB_CONNECTION_STRING,
-                DatabaseName = Constants.MONGODB_DATABASE_NAME
-            }));
+            services.AddDbContext<NotesnookDbContext>(options =>
+                options.UseNotesnookSqlite(Constants.DB_CONNECTION_STRING));
 
             services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
 
@@ -98,7 +95,7 @@ namespace Notesnook.API
 
             services.AddDistributedMemoryCache(delegate (MemoryDistributedCacheOptions cacheOptions)
             {
-                cacheOptions.SizeLimit = 262144000L;
+                cacheOptions.SizeLimit = 16L * 1024 * 1024;
             });
 
             services.AddAuthorization(options =>
@@ -126,79 +123,65 @@ namespace Notesnook.API
             }).AddSingleton<IAuthorizationMiddlewareResultHandler, AuthorizationResultTransformer>();
 
             services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-            .AddOAuth2Introspection("introspection", options =>
+            .AddJwtBearer("introspection", options =>
             {
+                // Access tokens are self-contained JWTs now (Config.cs: AccessTokenType.Jwt),
+                // validated locally against Identity's signing keys. The old reference-token
+                // + /connect/introspect round-trip was taking ~8 s per call under load and
+                // stalling every SignalR sync connect until the client timed out.
                 options.Authority = Servers.IdentityServer.ToString();
-                options.ClientSecret = Constants.NOTESNOOK_API_SECRET;
-                options.ClientId = "notesnook";
-                options.DiscoveryPolicy.RequireHttps = false;
-                options.TokenRetriever = new Func<HttpRequest, string>(req =>
-                {
-                    var fromHeader = TokenRetrieval.FromAuthorizationHeader();
-                    var fromQuery = TokenRetrieval.FromQueryString();   //needed for signalr and ws/wss conections to be authed via jwt
-                    return fromHeader(req) ?? fromQuery(req);
-                });
-
-                options.Events.OnTokenValidated = (context) =>
-                {
-                    if (long.TryParse(context.Principal?.FindFirst("exp")?.Value, out long expiryTime))
-                    {
-                        context.Properties.ExpiresUtc = DateTimeOffset.FromUnixTimeSeconds(expiryTime);
-                    }
-                    context.Properties.AllowRefresh = true;
-                    context.Properties.IsPersistent = true;
-                    context.HttpContext.User = context.Principal ?? throw new Exception("No principal found in token.");
-                    return Task.CompletedTask;
-                };
-                options.CacheKeyGenerator = (options, token) => (token + ":" + "reference_token").Sha256();
+                options.RequireHttpsMetadata = false;
+                options.MapInboundClaims = false;
                 options.SaveToken = true;
-                options.EnableCaching = true;
-                options.CacheDuration = TimeSpan.FromMinutes(30);
+                options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+                {
+                    ValidateIssuer = true,
+                    ValidateAudience = true,
+                    ValidAudience = "notesnook",
+                    ValidateLifetime = true,
+                    ValidateIssuerSigningKey = true,
+                    NameClaimType = "sub",
+                    RoleClaimType = "role",
+                    ClockSkew = TimeSpan.FromMinutes(5),
+                };
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = (context) =>
+                    {
+                        // Authorization header for normal requests; ?access_token= for the
+                        // SignalR WebSocket (it can't set headers on the upgrade).
+                        var fromHeader = TokenRetrieval.FromAuthorizationHeader();
+                        var fromQuery = TokenRetrieval.FromQueryString();
+                        context.Token = fromHeader(context.Request) ?? fromQuery(context.Request);
+                        return Task.CompletedTask;
+                    },
+                    OnTokenValidated = (context) =>
+                    {
+                        if (long.TryParse(context.Principal?.FindFirst("exp")?.Value, out long expiryTime))
+                        {
+                            context.Properties.ExpiresUtc = DateTimeOffset.FromUnixTimeSeconds(expiryTime);
+                        }
+                        context.Properties.AllowRefresh = true;
+                        context.Properties.IsPersistent = true;
+                        context.HttpContext.User = context.Principal ?? throw new Exception("No principal found in token.");
+                        return Task.CompletedTask;
+                    }
+                };
             })
             .AddScheme<InboxApiKeyAuthenticationSchemeOptions, InboxApiKeyAuthenticationHandler>(
                 InboxApiKeyAuthenticationDefaults.AuthenticationScheme,
                 options => { }
             );
 
-            // Serializer.RegisterSerializer(new SyncItemBsonSerializer());
-            if (!BsonClassMap.IsClassMapRegistered(typeof(UserSettings)))
-                BsonClassMap.RegisterClassMap<UserSettings>();
-
-            if (!BsonClassMap.IsClassMapRegistered(typeof(EncryptedData)))
-                BsonClassMap.RegisterClassMap<EncryptedData>();
-
-            if (!BsonClassMap.IsClassMapRegistered(typeof(CallToAction)))
-                BsonClassMap.RegisterClassMap<CallToAction>();
-
-            if (!BsonClassMap.IsClassMapRegistered(typeof(SyncDevice)))
-                BsonClassMap.RegisterClassMap<SyncDevice>();
-
-            services.AddScoped<IDbContext, MongoDbContext>();
+            services.AddScoped<DbContext>(sp => sp.GetRequiredService<NotesnookDbContext>());
+            services.AddScoped<IDbContext>(sp => new EfDbContext(sp.GetRequiredService<NotesnookDbContext>()));
             services.AddScoped<IUnitOfWork, UnitOfWork>();
 
-            services.AddRepository<UserSettings>("user_settings", "notesnook")
-                    .AddRepository<Monograph>("monographs", "notesnook")
-                    .AddRepository<Announcement>("announcements", "notesnook")
-                    .AddRepository<DeviceIdsChunk>(Collections.DeviceIdsChunksKey, "notesnook")
-                    .AddRepository<SyncDevice>(Collections.SyncDevicesKey, "notesnook")
-                    .AddRepository<InboxApiKey>(Collections.InboxApiKeysKey, "notesnook")
-                    .AddRepository<InboxSyncItem>(Collections.InboxItemsKey, "notesnook");
-
-            services.AddMongoCollection(Collections.SettingsKey)
-                    .AddMongoCollection(Collections.AttachmentsKey)
-                    .AddMongoCollection(Collections.ContentKey)
-                    .AddMongoCollection(Collections.NotesKey)
-                    .AddMongoCollection(Collections.NotebooksKey)
-                    .AddMongoCollection(Collections.RelationsKey)
-                    .AddMongoCollection(Collections.RemindersKey)
-                    .AddMongoCollection(Collections.LegacySettingsKey)
-                    .AddMongoCollection(Collections.ShortcutsKey)
-                    .AddMongoCollection(Collections.TagsKey)
-                    .AddMongoCollection(Collections.ColorsKey)
-                    .AddMongoCollection(Collections.VaultsKey)
-                    .AddMongoCollection(Collections.InboxItemsKey)
-                    .AddMongoCollection(Collections.InboxApiKeysKey)
-                    .AddMongoCollection(Collections.InboxItemsHistoryKey);
+            services.AddRepository<UserSettings>()
+                    .AddRepository<Monograph>()
+                    .AddRepository<Announcement>()
+                    .AddRepository<InboxApiKey>()
+                    .AddRepository<InboxSyncItem>();
 
             services.AddScoped<ISyncItemsRepositoryAccessor, SyncItemsRepositoryAccessor>();
             services.AddScoped<SyncDeviceService>();
@@ -217,6 +200,9 @@ namespace Notesnook.API
                 hub.MaximumReceiveMessageSize = 100 * 1024 * 1024;
                 hub.KeepAliveInterval = TimeSpan.FromSeconds(15);
                 hub.ClientTimeoutInterval = TimeSpan.FromMinutes(10);
+                // Default is 15s; give a slow/buffered proxy (Cloudflare) more room
+                // for the client's first handshake frame to arrive.
+                hub.HandshakeTimeout = TimeSpan.FromSeconds(30);
                 hub.EnableDetailedErrors = true;
             }).AddMessagePackProtocol().AddJsonProtocol();
 
@@ -252,12 +238,8 @@ namespace Notesnook.API
                 options.Level = CompressionLevel.Fastest;
             });
 
-            services.AddOpenTelemetry()
-                    .ConfigureResource(resource => resource
-                        .AddService(serviceName: "Notesnook.API"))
-                    .WithMetrics((builder) => builder
-                            .AddMeter("Notesnook.API.Metrics.Sync")
-                            .AddPrometheusExporter());
+            // OpenTelemetry / Prometheus metrics removed — no scraper on a self-hosted
+            // single-user box. SyncEventCounterSource (EventSource) still works.
 
             services.AddQuartzHostedService(q =>
             {
@@ -283,8 +265,19 @@ namespace Notesnook.API
         {
             app.UseForwardedHeadersWithKnownProxies(env);
 
-            app.UseOpenTelemetryPrometheusScrapingEndpoint((context) => context.Request.Path == "/metrics" && context.Connection.LocalPort == 5067);
-            app.UseResponseCompression();
+            // Response compression must not wrap the SignalR WebSocket pipeline.
+            app.UseWhen(
+                ctx => !ctx.Request.Path.StartsWithSegments("/hubs"),
+                branch => branch.UseResponseCompression()
+            );
+
+            // Vendored monograph unlock-page assets (libsodium sumo). Served from
+            // wwwroot/ at /assets/*; long-cache since the file is content-stable.
+            app.UseStaticFiles(new StaticFileOptions
+            {
+                OnPrepareResponse = ctx =>
+                    ctx.Context.Response.Headers.CacheControl = "public, max-age=31536000, immutable"
+            });
 
             app.UseWebSockets(new Microsoft.AspNetCore.Builder.WebSocketOptions
             {
@@ -319,21 +312,22 @@ namespace Notesnook.API
             {
                 endpoints.MapControllers();
                 endpoints.MapHealthChecks("/health");
+                // The Notesnook client validates the "Monograph server" URL by
+                // GET {url}/api/version and expects id "monograph" (prod monogr.ph
+                // returns {"version":1,"id":"monograph","instance":"..."}). We render
+                // monographs in-process, so answer here.
+                endpoints.MapGet("/api/version", () => Microsoft.AspNetCore.Http.Results.Json(new
+                {
+                    version = Constants.COMPATIBILITY_VERSION,
+                    id = "monograph",
+                    instance = Constants.INSTANCE_NAME
+                }));
                 endpoints.MapHub<SyncV2Hub>("/hubs/sync/v2", options =>
                 {
                     options.CloseOnAuthenticationExpiration = false;
                     options.Transports = HttpTransportType.WebSockets;
                 });
             });
-        }
-    }
-
-    public static class ServiceCollectionMongoCollectionExtensions
-    {
-        public static IServiceCollection AddMongoCollection(this IServiceCollection services, string collectionName, string database = "notesnook")
-        {
-            services.AddKeyedSingleton(collectionName, (provider, key) => MongoDbContext.GetMongoCollection<SyncItem>(provider.GetRequiredService<MongoDB.Driver.IMongoClient>(), database, collectionName));
-            return services;
         }
     }
 }

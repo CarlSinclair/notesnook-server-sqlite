@@ -51,6 +51,13 @@ namespace Streetwriters.Identity.Services
 
             context.IssuedClaims.AddRange(roles.Select((r) => new Claim(JwtClaimTypes.Role, r)));
             context.IssuedClaims.AddRange(claims);
+
+            // `verified` is not a stored claim — it mirrors EmailConfirmed. The
+            // reference-token path synthesised it in CustomIntrospectionResponseGenerator;
+            // for JWT access tokens it has to be emitted here or SyncRequirement
+            // ("confirm your email to sync") rejects every connection.
+            if (!context.IssuedClaims.Any((c) => c.Type == "verified"))
+                context.IssuedClaims.Add(new Claim("verified", user.EmailConfirmed.ToString().ToLowerInvariant()));
         }
 
         public Task IsActiveAsync(IsActiveContext context)

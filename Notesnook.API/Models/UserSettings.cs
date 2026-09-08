@@ -18,8 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using System;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using Notesnook.API.Interfaces;
 
 namespace Notesnook.API.Models
@@ -47,7 +45,7 @@ namespace Notesnook.API.Models
     {
         public UserSettings()
         {
-            this.Id = ObjectId.GenerateNewId();
+            this.Id = System.Guid.NewGuid().ToString();
         }
         public required string UserId { get; set; }
         public long LastSynced { get; set; }
@@ -60,8 +58,6 @@ namespace Notesnook.API.Models
         public InboxKeys? InboxKeys { get; set; }
         public Limit? StorageLimit { get; set; }
 
-        [BsonId]
-        [BsonRepresentation(BsonType.ObjectId)]
-        public ObjectId Id { get; set; }
+        public string Id { get; set; } = string.Empty;
     }
 }

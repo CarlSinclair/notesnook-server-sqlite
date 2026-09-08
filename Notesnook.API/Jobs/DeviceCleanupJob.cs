@@ -1,41 +1,52 @@
+/*
+This file is part of the Notesnook Sync Server project (https://notesnook.com/)
+
+Copyright (C) 2023 Streetwriters (Private) Limited
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the Affero GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+Affero GNU General Public License for more details.
+
+You should have received a copy of the Affero GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using MongoDB.Driver;
-using Notesnook.API.Interfaces;
-using Notesnook.API.Models;
-using Notesnook.API.Services;
+using Microsoft.EntityFrameworkCore;
+using Notesnook.API.Data;
 using Quartz;
 
 namespace Notesnook.API.Jobs
 {
-    public class DeviceCleanupJob(ISyncItemsRepositoryAccessor repositories) : IJob
+    public class DeviceCleanupJob(NotesnookDbContext db) : IJob
     {
         public async Task Execute(IJobExecutionContext context)
         {
             var cutoffDate = DateTimeOffset.UtcNow.AddMonths(-1).ToUnixTimeMilliseconds();
-            var deviceFilter = Builders<SyncDevice>.Filter.Lt(x => x.LastAccessTime, cutoffDate);
 
-            using var cursor = await repositories.SyncDevices.Collection.Find(deviceFilter, new FindOptions { BatchSize = 1000 })
-                .Project(x => x.DeviceId)
-                .ToCursorAsync();
+            var stale = await db.SyncDevices.AsNoTracking()
+                .Where(x => x.LastAccessTime < cutoffDate)
+                .Select(x => new { x.UserId, x.DeviceId })
+                .ToListAsync();
 
-            var deleteModels = new List<WriteModel<DeviceIdsChunk>>();
-            while (await cursor.MoveNextAsync())
+            if (stale.Count == 0) return;
+
+            foreach (var d in stale)
             {
-                if (!cursor.Current.Any()) continue;
-                deleteModels.Add(new DeleteManyModel<DeviceIdsChunk>(Builders<DeviceIdsChunk>.Filter.In(x => x.DeviceId, cursor.Current)));
+                await db.DevicePendingIds
+                    .Where(p => p.UserId == d.UserId && p.DeviceId == d.DeviceId)
+                    .ExecuteDeleteAsync();
             }
 
-            if (deleteModels.Count > 0)
-            {
-                var bulkOptions = new BulkWriteOptions { IsOrdered = false };
-                await repositories.DeviceIdsChunks.Collection.BulkWriteAsync(deleteModels, bulkOptions);
-            }
-
-            await repositories.SyncDevices.Collection.DeleteManyAsync(deviceFilter);
+            await db.SyncDevices.Where(x => x.LastAccessTime < cutoffDate).ExecuteDeleteAsync();
         }
     }
 }

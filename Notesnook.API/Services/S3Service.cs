@@ -27,7 +27,6 @@ using Amazon;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Microsoft.Extensions.Logging;
-using MongoDB.Driver;
 using Notesnook.API.Helpers;
 using Notesnook.API.Interfaces;
 using Notesnook.API.Models;
@@ -327,10 +326,6 @@ namespace Notesnook.API.Services
             if (!Constants.IS_SELF_HOSTED)
             {
                 await Repositories.UsersSettings.UpsertAsync(userSettings, (u) => u.UserId == userId);
-                await Repositories.UsersSettings.Collection.UpdateOneAsync(
-                    Builders<UserSettings>.Filter.Eq(u => u.UserId, userId),
-                    Builders<UserSettings>.Update.Set(u => u.StorageLimit, userSettings.StorageLimit)
-                );
             }
         }
 

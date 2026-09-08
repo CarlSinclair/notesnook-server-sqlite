@@ -19,7 +19,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 using Microsoft.Extensions.DependencyInjection;
 using Streetwriters.Common.Accessors;
-using Streetwriters.Data.DbContexts;
 using Streetwriters.Data.Repositories;
 
 namespace Streetwriters.Common.Extensions
@@ -33,9 +32,14 @@ namespace Streetwriters.Common.Extensions
             return services;
         }
 
-        public static IServiceCollection AddRepository<T>(this IServiceCollection services, string collectionName, string database) where T : class
+        /// <summary>
+        /// Registers a generic <see cref="Repository{T}"/> for entity <typeparamref name="T"/>.
+        /// The entity must be mapped by the app's EF Core DbContext (see NotesnookDbContext).
+        /// The <paramref name="collectionName"/>/<paramref name="database"/> args are retained
+        /// for call-site compatibility and ignored (SQLite backend).
+        /// </summary>
+        public static IServiceCollection AddRepository<T>(this IServiceCollection services, string? collectionName = null, string? database = null) where T : class
         {
-            services.AddSingleton((provider) => MongoDbContext.GetMongoCollection<T>(provider.GetRequiredService<MongoDB.Driver.IMongoClient>(), database, collectionName));
             services.AddScoped<Repository<T>>();
             return services;
         }

@@ -20,8 +20,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 
 namespace Notesnook.API.Models
 {
@@ -54,15 +52,9 @@ namespace Notesnook.API.Models
             get; set;
         }
 
-        [BsonId]
-        [BsonIgnoreIfDefault]
-        [BsonRepresentation(BsonType.ObjectId)]
         [JsonIgnore]
         [MessagePack.IgnoreMember]
-        public ObjectId Id
-        {
-            get; set;
-        }
+        public string Id { get; set; } = string.Empty;
 
         [JsonPropertyName("v")]
         [DataMember(Name = "v")]

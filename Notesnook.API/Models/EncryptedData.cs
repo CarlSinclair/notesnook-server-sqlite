@@ -17,8 +17,6 @@ You should have received a copy of the Affero GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using Notesnook.API.Interfaces;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
@@ -30,25 +28,21 @@ namespace Notesnook.API.Models
     {
         [MessagePack.Key("iv")]
         [JsonPropertyName("iv")]
-        [BsonElement("iv")]
         [DataMember(Name = "iv")]
         public required string IV { get; set; }
 
         [MessagePack.Key("cipher")]
         [JsonPropertyName("cipher")]
-        [BsonElement("cipher")]
         [DataMember(Name = "cipher")]
         public required string Cipher { get; set; }
 
         [MessagePack.Key("length")]
         [JsonPropertyName("length")]
-        [BsonElement("length")]
         [DataMember(Name = "length")]
         public long Length { get; set; }
 
         [MessagePack.Key("salt")]
         [JsonPropertyName("salt")]
-        [BsonElement("salt")]
         [DataMember(Name = "salt")]
         public required string Salt { get; set; }
 

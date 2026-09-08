@@ -1,0 +1,13 @@
+noble/  — vendored subset of @noble/hashes 2.4.0 and @noble/ciphers 2.4.0
+         (paulmillr, MIT). Used by monograph/unlock.js for pure-JS Argon2i +
+         XChaCha20-Poly1305 on the monograph password-unlock page. No WASM,
+         no eval — CSP stays `script-src 'self'`.
+
+  hashes/  : argon2.js blake2.js utils.js _blake.js _md.js _u64.js
+  ciphers/ : chacha.js _arx.js _poly1305.js utils.js
+  (exact dependency closure of argon2i + xchacha20poly1305; loaded as native
+   ES modules, relative imports resolved by the browser.)
+
+  https://github.com/paulmillr/noble-hashes
+  https://github.com/paulmillr/noble-ciphers
+  vendored 2026-09-03

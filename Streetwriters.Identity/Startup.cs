@@ -21,11 +21,6 @@ using System;
 using System.IO;
 using System.Security.Claims;
 using System.Threading.RateLimiting;
-using AspNetCore.Identity.Mongo;
-using IdentityServer4.MongoDB.Entities;
-using IdentityServer4.MongoDB.Interfaces;
-using IdentityServer4.MongoDB.Options;
-using IdentityServer4.MongoDB.Stores;
 using IdentityServer4.ResponseHandling;
 using IdentityServer4.Services;
 using IdentityServer4.Stores;
@@ -36,24 +31,23 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.IdentityModel.Tokens;
-using MongoDB.Bson.Serialization;
-using Quartz;
 using Streetwriters.Common;
 using Streetwriters.Common.Extensions;
 using Streetwriters.Common.Interfaces;
 using Streetwriters.Common.Messages;
 using Streetwriters.Common.Models;
 using Streetwriters.Common.Services;
+using Streetwriters.Data.Sqlite;
+using Streetwriters.Identity.Data;
 using Streetwriters.Identity.Helpers;
 using Streetwriters.Identity.Interfaces;
-using Streetwriters.Identity.Jobs;
 using Streetwriters.Identity.Services;
 using Streetwriters.Identity.Validation;
-using IdentityServer4.MongoDB.Configuration;
 
 namespace Streetwriters.Identity
 {
@@ -72,7 +66,11 @@ namespace Streetwriters.Identity
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
-            var connectionString = Constants.MONGODB_CONNECTION_STRING;
+            var connectionString = Constants.DB_CONNECTION_STRING;
+
+            services.AddDbContext<IdentityDbContext>(options => options
+                .UseLazyLoadingProxies()
+                .UseNotesnookSqlite(connectionString, migrationsHistoryTable: "__EFMigrationsHistory_Identity"));
 
             services.AddTransient<IEmailSender, EmailSender>();
             services.AddTransient<ITemplatedEmailSender, TemplatedEmailSender>();
@@ -81,8 +79,7 @@ namespace Streetwriters.Identity
 
             services.AddDefaultCors();
 
-            //services.AddSingleton<IProfileService, UserService>();
-            services.AddIdentityMongoDbProvider<User>(options =>
+            services.AddIdentity<User, Role>(options =>
             {
                 // Password settings.
                 options.Password.RequireDigit = false;
@@ -102,13 +99,9 @@ namespace Streetwriters.Identity
                 options.User.RequireUniqueEmail = true;
 
                 options.Tokens.ChangeEmailTokenProvider = TokenOptions.DefaultPhoneProvider;
-            }, (options) =>
-            {
-                options.RolesCollection = "roles";
-                options.UsersCollection = "users";
-                // options.MigrationCollection = "migration";
-                options.ConnectionString = connectionString;
-            }).AddDefaultTokenProviders();
+            }).AddRoles<Role>()
+              .AddEntityFrameworkStores<IdentityDbContext>()
+              .AddDefaultTokenProviders();
 
             services.AddIdentityServer(
             options =>
@@ -121,9 +114,15 @@ namespace Streetwriters.Identity
             .AddExtensionGrantValidator<EmailGrantValidator>()
             .AddExtensionGrantValidator<MFAGrantValidator>()
             .AddExtensionGrantValidator<MFAPasswordGrantValidator>()
-            .AddConfigurationStore(options =>
+            // Clients / API resources / scopes are in-memory (Config.cs) — no config store.
+            .AddOperationalStore(options =>
             {
-                options.ConnectionString = connectionString;
+                options.ConfigureDbContext = b => b
+                    .UseNotesnookSqlite(connectionString,
+                        migrationsHistoryTable: "__EFMigrationsHistory_IdentityServer",
+                        migrationsAssembly: "Streetwriters.Identity");
+                options.EnableTokenCleanup = true;
+                options.TokenCleanupInterval = 3600 * 12;
             })
             .AddAspNetIdentity<User>()
             .AddInMemoryClients(Config.Clients)
@@ -132,11 +131,6 @@ namespace Streetwriters.Identity
             .AddInMemoryIdentityResources(Config.IdentityResources)
             .AddKeyManagement()
             .AddFileSystemPersistence(Path.Combine(WebHostEnvironment.ContentRootPath, @"keystore"));
-
-            services.Configure<MongoDBConfiguration>(options =>
-            {
-                options.ConnectionString = connectionString;
-            });
 
             services.Configure<DataProtectionTokenProviderOptions>(options =>
             {
@@ -192,14 +186,8 @@ namespace Streetwriters.Identity
                 };
             });
 
-            services.AddQuartzHostedService(q =>
-            {
-                q.WaitForJobsToComplete = true;
-                q.AwaitApplicationStarted = true;
-                q.StartDelay = TimeSpan.FromMinutes(1);
-            });
-
-            AddOperationalStore(services, new TokenCleanupOptions { Enable = true, Interval = 3600 * 12 });
+            // Expired-grant cleanup is handled by IdentityServer4.EntityFramework's
+            // built-in TokenCleanupHost (EnableTokenCleanup above).
 
             services.AddScoped<EmailAddressValidator>();
             services.AddScoped<IUserAccountService, UserAccountService>();
@@ -260,34 +248,6 @@ namespace Streetwriters.Identity
             {
                 endpoints.MapControllers();
                 endpoints.MapHealthChecks("/health");
-            });
-        }
-
-        private static void AddOperationalStore(IServiceCollection services, TokenCleanupOptions? tokenCleanUpOptions = null)
-        {
-            BsonClassMap.RegisterClassMap<PersistedGrant>(cm =>
-            {
-                cm.AutoMap();
-                cm.SetIgnoreExtraElements(true);
-            });
-
-            services.AddSingleton<IPersistedGrantDbContext, CustomPersistedGrantDbContext>();
-            services.AddTransient<IPersistedGrantStore, PersistedGrantStore>();
-            services.AddTransient<TokenCleanup>();
-
-            services.AddQuartz(q =>
-            {
-                q.UseMicrosoftDependencyInjectionJobFactory();
-
-                if (tokenCleanUpOptions?.Enable == true)
-                {
-                    var jobKey = new JobKey("TokenCleanupJob");
-                    q.AddJob<TokenCleanupJob>(opts => opts.WithIdentity(jobKey));
-                    q.AddTrigger(opts => opts
-                        .ForJob(jobKey)
-                        .WithIdentity("TokenCleanup-trigger")
-                        .WithSimpleSchedule((s) => s.RepeatForever().WithIntervalInSeconds(tokenCleanUpOptions.Interval)));
-                }
             });
         }
     }

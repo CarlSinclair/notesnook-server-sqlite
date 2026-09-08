@@ -1,101 +1,64 @@
-# Notesnook Sync Server
+# Notesnook Sync Server — SQLite fork
 
-This repo contains the full source code of the Notesnook Sync Server licensed under AGPLv3.
+A fork of the [Notesnook Sync Server](https://github.com/streetwriters/notesnook-sync-server)
+(upstream tag `v1.0-beta.36`) that **replaces MongoDB with SQLite** and is tuned to
+run on a small, low-RAM VPS.
 
-## Building
+The upstream server needs MongoDB, MinIO/S3, Redis and a handful of Docker
+containers — comfortably 700 MB+ of RAM before your notes. This fork runs the
+**Identity server + sync API (+ optional SSE push)** as one process tree from a
+single systemd unit, backed by one SQLite file, at **~150–250 MB** total. It is
+meant for a personal instance: one user, a few devices.
 
-### From source
+## What changed
 
-Requirements:
+| Area | Upstream | This fork |
+|---|---|---|
+| Database | MongoDB (13 collections) | SQLite via EF Core 9 — one file, `sync_items` table with a `type` column |
+| Identity / grants | `AspNetCore.Identity.Mongo`, custom Mongo grant store | EF Core Identity + `IdentityServer4.EntityFramework` operational store, same SQLite file |
+| Redis | TTL / SignalR backplane / cache | removed — single instance, IdentityServer4 + Quartz handle expiry, SQLite handles the rest |
+| Object storage | MinIO container | any S3-compatible endpoint (e.g. Cloudflare R2), configured in `.env` |
+| Monograph public pages | separate `monograph-server` (Bun/TS) | rendered in-process by the API at `GET /share/{key}` (pure-JS `@noble` crypto for the unlock page, no eval/WASM) |
+| Packaging | Docker Compose | bare metal: one systemd unit + a supervisor script, no containers |
+| Web clipper (`Notesnook.Inbox.API`) | standalone Bun/TS service | in-app: inbox key management + `/inbox/*` on the main API |
 
-1. [.NET 8](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)
-2. [git](https://git-scm.com/downloads)
+Not carried over: the Docker/Compose setup, the standalone `monograph-server` /
+`cors-proxy` / `themes` services, the external-backend Compose examples.
 
-The first step is to `clone` the repository:
+The wire protocol is unchanged — official Notesnook clients (desktop, mobile,
+web) point at it with **Settings → Servers**.
+
+## Build
+
+Requires the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0).
 
 ```bash
-git clone https://github.com/streetwriters/notesnook-sync-server.git
-
-# change directory
-cd notesnook-sync-server
-```
-
-Once you are inside the `./notesnook-sync-server` directory, run:
-
-```bash
-# this might take a while to complete
 dotnet restore Notesnook.sln
+dotnet build   Notesnook.sln -c Release
+
+# publish the three services
+dotnet publish Notesnook.API/Notesnook.API.csproj             -c Release -o publish/api
+dotnet publish Streetwriters.Identity/Streetwriters.Identity.csproj -c Release -o publish/identity
+dotnet publish Streetwriters.Messenger/Streetwriters.Messenger.csproj -c Release -o publish/sse
 ```
 
-Then build all projects:
+## Deploy
 
-```bash
-dotnet build Notesnook.sln
-```
+See [`example/`](example/): a systemd unit, the supervisor script, an annotated
+`.env`, reverse-proxy configs for **Caddy, nginx and Apache**, and a full
+step-by-step in [`example/SETUP.md`](example/SETUP.md).
 
-To run the `Notesnook.API` project:
-
-```bash
-dotnet run --project Notesnook.API/Notesnook.API.csproj
-```
-
-To run the `Streetwriters.Messenger` project:
-
-```bash
-dotnet run --project Streetwriters.Messenger/Streetwriters.Messenger.csproj
-```
-
-To run the `Streetwriters.Identity` project:
-
-```bash
-dotnet run --project Streetwriters.Identity/Streetwriters.Identity.csproj
-```
-
-### Using docker
-
-The sync server can easily be started using Docker.
-
-Download `docker-compose.yml` and [`.env`](.env):
-
-```bash
-wget https://raw.githubusercontent.com/streetwriters/notesnook-sync-server/master/docker-compose.yml
-wget https://raw.githubusercontent.com/streetwriters/notesnook-sync-server/master/.env
-```
-
-Edit `.env` and set at least `NOTESNOOK_API_SECRET`. See `.env` for all configuration options.
-
-Then start the stack:
-
-```bash
-docker compose up
-```
-
-This sets up MongoDB, MinIO, and the Notesnook services.
-
-Optional services (`themes-server`, `cors-proxy`, `inbox-api`): `docker compose --profile extras up`
-
-For external MongoDB, MinIO, or Garage deployments, see [`examples/`](examples/).
-
-## TODO Self-hosting
-
-**Note: Self-hosting the Notesnook Sync Server is now possible, but without support. Documentation will be provided at a later date. We are working to enable full on-premise self-hosting, so stay tuned!**
-
-- [x] Open source the Sync server
-- [x] Open source the Identity server
-- [x] Open source the SSE Messaging infrastructure
-- [x] Fully Dockerize all services
-- [x] Use self-hosted Minio for S3 storage
-- [x] Publish on DockerHub
-- [x] Add settings to change server URLs in Notesnook client apps (starting from v3.0.18)
-- [ ] Write self hosting docs
+`.github/workflows/deploy.yml` is a working GitHub Actions pipeline that builds
+the three services and ships them to a host over SSH — adapt the final step to
+your setup (it just needs a way to drop the built tree on the box and restart
+the unit).
 
 ## License
 
+AGPLv3, unchanged from upstream. Original work © Streetwriters (Private) Limited;
+see `AUTHORS` and the header in every source file.
+
 ```
-This file is part of the Notesnook Sync Server project (https://notesnook.com/)
-
-Copyright (C) 2023 Streetwriters (Private) Limited
-
 This program is free software: you can redistribute it and/or modify
 it under the terms of the Affero GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or

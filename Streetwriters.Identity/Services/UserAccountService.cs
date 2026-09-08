@@ -4,7 +4,6 @@ using System.Linq;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.Tasks;
-using AspNetCore.Identity.Mongo.Model;
 using IdentityServer4;
 using IdentityServer4.Stores;
 using Microsoft.AspNetCore.Identity;
@@ -23,7 +22,7 @@ using Streetwriters.Identity.Models;
 
 namespace Streetwriters.Identity.Services
 {
-    public class UserAccountService(UserManager<User> userManager, IMFAService mfaService, IPersistedGrantStore persistedGrantStore, RoleManager<MongoRole> roleManager, EmailAddressValidator emailValidator, ITemplatedEmailSender emailSender, ITokenGenerationService tokenGenerationService, ILogger<UserAccountService> logger) : IUserAccountService
+    public class UserAccountService(UserManager<User> userManager, IMFAService mfaService, IPersistedGrantStore persistedGrantStore, RoleManager<Role> roleManager, EmailAddressValidator emailValidator, ITemplatedEmailSender emailSender, ITokenGenerationService tokenGenerationService, ILogger<UserAccountService> logger) : IUserAccountService
     {
         public async Task<UserModel?> GetUserAsync(string clientId, string userId)
         {
@@ -140,7 +139,7 @@ namespace Streetwriters.Identity.Services
                 };
 
                 if (await roleManager.FindByNameAsync(clientId) == null)
-                    await roleManager.CreateAsync(new MongoRole(clientId));
+                    await roleManager.CreateAsync(new Role { Name = clientId });
 
                 // email addresses must be case-insensitive
                 email = email.ToLowerInvariant();

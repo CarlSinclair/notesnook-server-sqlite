@@ -36,8 +36,6 @@ using MimeKit.Cryptography;
 using Org.BouncyCastle.Bcpg;
 using Org.BouncyCastle.Bcpg.OpenPgp;
 using Scriban;
-using SendGrid;
-using SendGrid.Helpers.Mail;
 using Streetwriters.Common;
 using Streetwriters.Common.Helpers;
 using Streetwriters.Common.Interfaces;

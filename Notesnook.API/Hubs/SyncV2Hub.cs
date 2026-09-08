@@ -30,13 +30,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
-using MongoDB.Driver;
 using Notesnook.API.Authorization;
 using Notesnook.API.Extensions;
 using Notesnook.API.Helpers;
 using Notesnook.API.Interfaces;
 using Notesnook.API.Models;
 using Notesnook.API.Services;
+using Streetwriters.Common;
 using Streetwriters.Data.Interfaces;
 
 namespace Notesnook.API.Hubs
@@ -128,13 +128,7 @@ namespace Notesnook.API.Hubs
         public override async Task OnDisconnectedAsync(Exception? exception)
         {
             if (exception != null)
-            {
-                Logger.LogWarning(exception, "Connection {ConnectionId} disconnected with error (server-side drop)", Context.ConnectionId);
-            }
-            else
-            {
-                Logger.LogInformation("Connection {ConnectionId} disconnected cleanly (client-initiated)", Context.ConnectionId);
-            }
+                Logger.LogWarning(exception, "Connection {ConnectionId} disconnected with error", Context.ConnectionId);
             await base.OnDisconnectedAsync(exception);
         }
 
@@ -194,31 +188,26 @@ namespace Notesnook.API.Hubs
                 var filteredIds = ids.Where((id) => id.Type == type).Select((id) => id.ItemId).ToArray();
                 if (!resetSync && filteredIds.Length == 0) continue;
 
-                using var cursor = await def.FindItems(userId, filteredIds, resetSync, size);
-
                 var chunk = new List<SyncItem>();
                 long totalBytes = 0;
                 long METADATA_BYTES = 5 * 1024;
 
-                while (await cursor.MoveNextAsync())
+                await foreach (var item in def.FindItems(userId, filteredIds, resetSync, size))
                 {
-                    foreach (var item in cursor.Current)
+                    chunk.Add(item);
+                    totalBytes += item.Length + METADATA_BYTES;
+                    if (totalBytes >= maxBytes)
                     {
-                        chunk.Add(item);
-                        totalBytes += item.Length + METADATA_BYTES;
-                        if (totalBytes >= maxBytes)
+                        itemsProcessed += chunk.Count;
+                        yield return new SyncTransferItemV2
                         {
-                            itemsProcessed += chunk.Count;
-                            yield return new SyncTransferItemV2
-                            {
-                                Items = chunk,
-                                Type = type,
-                                Count = itemsProcessed
-                            };
+                            Items = chunk,
+                            Type = type,
+                            Count = itemsProcessed
+                        };
 
-                            totalBytes = 0;
-                            chunk.Clear();
-                        }
+                        totalBytes = 0;
+                        chunk = new List<SyncItem>();
                     }
                 }
                 if (chunk.Count > 0)
@@ -293,21 +282,14 @@ namespace Notesnook.API.Hubs
                     }
                 }
 
-                if (includeMonographs)
+                if (includeMonographs && Constants.ENABLE_MONOGRAPHS)
                 {
-                    var unsyncedMonographIds = ids.Where(k => k.Type == "monograph").Select(k => k.ItemId);
-                    FilterDefinition<Monograph> filter = device.IsSyncReset
-                        ? Builders<Monograph>.Filter.Eq(m => m.UserId, userId)
-                        : Builders<Monograph>.Filter.And(
-                            Builders<Monograph>.Filter.Eq(m => m.UserId, userId),
-                            Builders<Monograph>.Filter.Or(
-                                Builders<Monograph>.Filter.In(m => m.ItemId, unsyncedMonographIds),
-                                Builders<Monograph>.Filter.In("_id", unsyncedMonographIds)
-                            )
-                        );
-                    var userMonographs = await Repositories.Monographs.Collection
-                        .Find(filter)
-                        .Project((m) => new MonographMetadata
+                    // Monograph publishing is not enabled in this build (deferred).
+                    // See docs/SQLITE-REFACTOR.md — "not in scope now".
+                    var unsyncedMonographIds = ids.Where(k => k.Type == "monograph").Select(k => k.ItemId).ToHashSet();
+                    var userMonographs = (await Repositories.Monographs.FindAsync(m => m.UserId == userId))
+                        .Where(m => device.IsSyncReset || unsyncedMonographIds.Contains(m.ItemId!) || unsyncedMonographIds.Contains(m.Id))
+                        .Select(m => new MonographMetadata
                         {
                             DatePublished = m.DatePublished,
                             Deleted = m.Deleted,
@@ -315,21 +297,16 @@ namespace Notesnook.API.Hubs
                             SelfDestruct = m.SelfDestruct,
                             Title = m.Title,
                             ItemId = m.ItemId ?? m.Id.ToString(),
-                            PublishUrl = m.Slug // this will be converted to full url in the end, but we only need slug for now
+                            PublishUrl = m.Slug
                         })
-                        .ToListAsync();
-
-                    userMonographs = userMonographs.Select((p) =>
-                    {
-                        p.PublishUrl = UrlHelper.ConstructPublishUrl(p);
-                        return p;
-                    }).ToList();
+                        .Select(p => { p.PublishUrl = UrlHelper.ConstructPublishUrl(p); return p; })
+                        .ToList();
 
                     if (userMonographs.Count > 0 && !await Clients.Caller.SendMonographs(userMonographs).WaitAsync(TimeSpan.FromMinutes(10)))
                         throw new HubException("Client rejected monographs.");
                 }
 
-                if (includeInboxItems)
+                if (includeInboxItems && Constants.ENABLE_INBOX)
                 {
                     var unsyncedInboxItemIds = ids.Where(k => k.Type == "inbox_item").Select(k => k.ItemId);
                     var userInboxItems = device.IsSyncReset
@@ -356,7 +333,7 @@ namespace Notesnook.API.Hubs
 
         private record CollectionDef(
             string Key,
-            Func<string, IEnumerable<string>, bool, int, Task<IAsyncCursor<SyncItem>>> FindItems
+            Func<string, IEnumerable<string>, bool, int, IAsyncEnumerable<SyncItem>> FindItems
         );
     }
 

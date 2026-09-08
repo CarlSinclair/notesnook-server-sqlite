@@ -18,16 +18,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 
-using MongoDB.Driver;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Streetwriters.Data.Interfaces
 {
+    /// <summary>
+    /// A deferred-write unit of work. Repository write methods enqueue commands via
+    /// <see cref="AddCommand"/>; <see cref="SaveChanges"/> runs them all inside one
+    /// transaction. (Was a MongoDB session/WithTransaction wrapper; now EF Core + SQLite.)
+    /// </summary>
     public interface IDbContext : IDisposable
     {
-        void AddCommand(Func<IClientSessionHandle, CancellationToken, Task> func);
+        void AddCommand(Func<CancellationToken, Task> command);
         Task<int> SaveChanges();
     }
 }

@@ -18,15 +18,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using MongoDB.Driver;
-using Notesnook.API.Interfaces;
+using Notesnook.API.Data;
 using Notesnook.API.Models;
 
 namespace Notesnook.API.Services
@@ -35,93 +32,40 @@ namespace Notesnook.API.Services
     {
         public override string ToString() => $"{ItemId}:{Type}";
     }
-    public class SyncDeviceService(ISyncItemsRepositoryAccessor repositories, ILogger<SyncDeviceService> logger)
+
+    /// <summary>
+    /// Per-device "not yet pulled" id tracking. Was MongoDB SyncDevice +
+    /// DeviceIdsChunk (array chunking to beat the 16 MB doc limit); now plain rows
+    /// in <c>device_pending_ids</c> with buckets "unsynced" / "pending".
+    /// </summary>
+    public class SyncDeviceService(NotesnookDbContext db, ILogger<SyncDeviceService> logger)
     {
-        private static FilterDefinition<SyncDevice> DeviceFilter(string userId, string deviceId) =>
-            Builders<SyncDevice>.Filter.Eq(x => x.UserId, userId) &
-            Builders<SyncDevice>.Filter.Eq(x => x.DeviceId, deviceId);
-        private static FilterDefinition<DeviceIdsChunk> DeviceIdsChunkFilter(string userId, string deviceId, string key) =>
-            Builders<DeviceIdsChunk>.Filter.Eq(x => x.UserId, userId) &
-            Builders<DeviceIdsChunk>.Filter.Eq(x => x.DeviceId, deviceId) &
-            Builders<DeviceIdsChunk>.Filter.Eq(x => x.Key, key);
+        private const string Unsynced = "unsynced";
+        private const string Pending = "pending";
 
-        private static FilterDefinition<DeviceIdsChunk> DeviceIdsChunkFilter(string userId, string deviceId) =>
-            Builders<DeviceIdsChunk>.Filter.Eq(x => x.UserId, userId) &
-            Builders<DeviceIdsChunk>.Filter.Eq(x => x.DeviceId, deviceId);
-
-        private static FilterDefinition<DeviceIdsChunk> DeviceIdsChunkFilter(string userId) =>
-            Builders<DeviceIdsChunk>.Filter.Eq(x => x.UserId, userId);
-
-        private static FilterDefinition<SyncDevice> UserFilter(string userId) => Builders<SyncDevice>.Filter.Eq(x => x.UserId, userId);
-
-
-        public async Task<HashSet<ItemKey>> GetIdsAsync(string userId, string deviceId, string key)
+        public async Task<HashSet<ItemKey>> GetIdsAsync(string userId, string deviceId, string bucket)
         {
-            var cursor = await repositories.DeviceIdsChunks.Collection.FindAsync(DeviceIdsChunkFilter(userId, deviceId, key));
-            var result = new HashSet<ItemKey>();
-            while (await cursor.MoveNextAsync())
-            {
-                foreach (var chunk in cursor.Current)
-                {
-                    foreach (var id in chunk.Ids)
-                    {
-                        var parts = id.Split(':', 2);
-                        result.Add(new ItemKey(parts[0], parts[1]));
-                    }
-                }
-            }
-            return result;
+            var rows = await db.DevicePendingIds.AsNoTracking()
+                .Where(x => x.UserId == userId && x.DeviceId == deviceId && x.Bucket == bucket)
+                .Select(x => new { x.ItemId, x.Type })
+                .ToListAsync();
+            return rows.Select(r => new ItemKey(r.ItemId, r.Type)).ToHashSet();
         }
 
-        const int MaxIdsPerChunk = 25_000;
-        public async Task AppendIdsAsync(string userId, string deviceId, string key, IEnumerable<ItemKey> ids)
+        public async Task AppendIdsAsync(string userId, string deviceId, string bucket, IEnumerable<ItemKey> ids)
         {
-            var filter = DeviceIdsChunkFilter(userId, deviceId, key) & Builders<DeviceIdsChunk>.Filter.Where(x => x.Ids.Length < MaxIdsPerChunk);
-            var chunk = await repositories.DeviceIdsChunks.Collection.Find(filter).FirstOrDefaultAsync();
-
-            if (chunk != null)
-            {
-                var update = Builders<DeviceIdsChunk>.Update.AddToSetEach(x => x.Ids, ids.Select(i => i.ToString()));
-                await repositories.DeviceIdsChunks.Collection.WithWriteConcern(WriteConcern.W1).UpdateOneAsync(
-                    Builders<DeviceIdsChunk>.Filter.Eq(x => x.Id, chunk.Id),
-                    update
-                );
-            }
-            else
-            {
-                var newChunk = new DeviceIdsChunk
-                {
-                    UserId = userId,
-                    DeviceId = deviceId,
-                    Key = key,
-                    Ids = [.. ids.Select(i => i.ToString())]
-                };
-                await repositories.DeviceIdsChunks.Collection.WithWriteConcern(WriteConcern.W1).InsertOneAsync(newChunk);
-            }
-
-            var emptyChunksFilter = DeviceIdsChunkFilter(userId, deviceId, key) & Builders<DeviceIdsChunk>.Filter.Size(x => x.Ids, 0);
-            await repositories.DeviceIdsChunks.Collection.WithWriteConcern(WriteConcern.W1).DeleteManyAsync(emptyChunksFilter);
+            const string sql =
+                "INSERT OR IGNORE INTO device_pending_ids (UserId, DeviceId, Bucket, ItemId, Type) VALUES ({0},{1},{2},{3},{4})";
+            foreach (var id in ids)
+                await db.Database.ExecuteSqlRawAsync(sql, userId, deviceId, bucket, id.ItemId, id.Type);
         }
 
-        public async Task WriteIdsAsync(string userId, string deviceId, string key, IEnumerable<ItemKey> ids)
+        public async Task WriteIdsAsync(string userId, string deviceId, string bucket, IEnumerable<ItemKey> ids)
         {
-            var writes = new List<WriteModel<DeviceIdsChunk>>
-            {
-                new DeleteManyModel<DeviceIdsChunk>(DeviceIdsChunkFilter(userId, deviceId, key))
-            };
-            var chunks = ids.Chunk(MaxIdsPerChunk);
-            foreach (var chunk in chunks)
-            {
-                var newChunk = new DeviceIdsChunk
-                {
-                    UserId = userId,
-                    DeviceId = deviceId,
-                    Key = key,
-                    Ids = [.. chunk.Select(i => i.ToString())]
-                };
-                writes.Add(new InsertOneModel<DeviceIdsChunk>(newChunk));
-            }
-            await repositories.DeviceIdsChunks.Collection.WithWriteConcern(WriteConcern.W1).BulkWriteAsync(writes);
+            await db.DevicePendingIds
+                .Where(x => x.UserId == userId && x.DeviceId == deviceId && x.Bucket == bucket)
+                .ExecuteDeleteAsync();
+            await AppendIdsAsync(userId, deviceId, bucket, ids);
         }
 
         public async Task<HashSet<ItemKey>> FetchUnsyncedIdsAsync(string userId, string deviceId)
@@ -129,76 +73,73 @@ namespace Notesnook.API.Services
             var device = await GetDeviceAsync(userId, deviceId);
             if (device == null || device.IsSyncReset) return [];
 
-            var unsyncedIds = await GetIdsAsync(userId, deviceId, "unsynced");
-            var pendingIds = await GetIdsAsync(userId, deviceId, "pending");
-
+            var unsyncedIds = await GetIdsAsync(userId, deviceId, Unsynced);
+            var pendingIds = await GetIdsAsync(userId, deviceId, Pending);
             unsyncedIds = [.. unsyncedIds, .. pendingIds];
-
             if (unsyncedIds.Count == 0) return [];
 
-            await repositories.DeviceIdsChunks.Collection.DeleteManyAsync(DeviceIdsChunkFilter(userId, deviceId, "unsynced"));
-            await WriteIdsAsync(userId, deviceId, "pending", unsyncedIds);
-
+            await db.DevicePendingIds
+                .Where(x => x.UserId == userId && x.DeviceId == deviceId && x.Bucket == Unsynced)
+                .ExecuteDeleteAsync();
+            await WriteIdsAsync(userId, deviceId, Pending, unsyncedIds);
             return unsyncedIds;
         }
 
-        public async Task WritePendingIdsAsync(string userId, string deviceId, HashSet<ItemKey> ids)
-        {
-            await WriteIdsAsync(userId, deviceId, "pending", ids);
-        }
+        public Task WritePendingIdsAsync(string userId, string deviceId, HashSet<ItemKey> ids)
+            => WriteIdsAsync(userId, deviceId, Pending, ids);
 
         public async Task ResetAsync(string userId, string deviceId)
         {
-            await repositories.SyncDevices.Collection.UpdateOneAsync(DeviceFilter(userId, deviceId), Builders<SyncDevice>.Update
-                .Set(x => x.IsSyncReset, false));
-            await repositories.DeviceIdsChunks.Collection.DeleteManyAsync(DeviceIdsChunkFilter(userId, deviceId, "pending"));
+            await db.SyncDevices
+                .Where(x => x.UserId == userId && x.DeviceId == deviceId)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.IsSyncReset, false));
+            await db.DevicePendingIds
+                .Where(x => x.UserId == userId && x.DeviceId == deviceId && x.Bucket == Pending)
+                .ExecuteDeleteAsync();
         }
 
-        public async Task<SyncDevice?> GetDeviceAsync(string userId, string deviceId)
-        {
-            return await repositories.SyncDevices.Collection.Find(DeviceFilter(userId, deviceId)).FirstOrDefaultAsync();
-        }
+        public Task<SyncDevice?> GetDeviceAsync(string userId, string deviceId)
+            => db.SyncDevices.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == userId && x.DeviceId == deviceId);
 
         public async IAsyncEnumerable<SyncDevice> ListDevicesAsync(string userId)
         {
-            using var cursor = await repositories.SyncDevices.Collection.FindAsync(UserFilter(userId));
-            while (await cursor.MoveNextAsync())
-            {
-                foreach (var device in cursor.Current)
-                {
-                    yield return device;
-                }
-            }
+            await foreach (var device in db.SyncDevices.AsNoTracking().Where(x => x.UserId == userId).AsAsyncEnumerable())
+                yield return device;
         }
 
         public async Task ResetDevicesAsync(string userId)
         {
-            await repositories.SyncDevices.Collection.DeleteManyAsync(UserFilter(userId));
-            await repositories.DeviceIdsChunks.Collection.DeleteManyAsync(DeviceIdsChunkFilter(userId));
+            await db.SyncDevices.Where(x => x.UserId == userId).ExecuteDeleteAsync();
+            await db.DevicePendingIds.Where(x => x.UserId == userId).ExecuteDeleteAsync();
         }
 
-        public async Task UpdateLastAccessTimeAsync(string userId, string deviceId)
+        public Task UpdateLastAccessTimeAsync(string userId, string deviceId)
         {
-            await repositories.SyncDevices.Collection.UpdateOneAsync(DeviceFilter(userId, deviceId), Builders<SyncDevice>.Update
-                .Set(x => x.LastAccessTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            // EF can't translate a method call inside SetProperty's value expression.
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            return db.SyncDevices
+                .Where(x => x.UserId == userId && x.DeviceId == deviceId)
+                .ExecuteUpdateAsync(s => s.SetProperty(x => x.LastAccessTime, now));
         }
 
         public async Task AddIdsToOtherDevicesAsync(string userId, string deviceId, IEnumerable<ItemKey> ids)
         {
+            var keys = ids as ICollection<ItemKey> ?? ids.ToList();
             await UpdateLastAccessTimeAsync(userId, deviceId);
             await foreach (var device in ListDevicesAsync(userId))
             {
                 if (device.DeviceId == deviceId || device.IsSyncReset) continue;
-                await AppendIdsAsync(userId, device.DeviceId, "unsynced", ids);
+                await AppendIdsAsync(userId, device.DeviceId, Unsynced, keys);
             }
         }
 
         public async Task AddIdsToAllDevicesAsync(string userId, IEnumerable<ItemKey> ids)
         {
+            var keys = ids as ICollection<ItemKey> ?? ids.ToList();
             await foreach (var device in ListDevicesAsync(userId))
             {
                 if (device.IsSyncReset) continue;
-                await AppendIdsAsync(userId, device.DeviceId, "unsynced", ids);
+                await AppendIdsAsync(userId, device.DeviceId, Unsynced, keys);
             }
         }
 
@@ -211,14 +152,16 @@ namespace Notesnook.API.Services
                 LastAccessTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 IsSyncReset = true
             };
-            await repositories.SyncDevices.Collection.InsertOneAsync(newDevice);
+            db.SyncDevices.Add(newDevice);
+            await db.SaveChangesAsync();
+            db.ChangeTracker.Clear();
             return newDevice;
         }
 
         public async Task UnregisterDeviceAsync(string userId, string deviceId)
         {
-            await repositories.SyncDevices.Collection.DeleteOneAsync(DeviceFilter(userId, deviceId));
-            await repositories.DeviceIdsChunks.Collection.DeleteManyAsync(DeviceIdsChunkFilter(userId, deviceId));
+            await db.SyncDevices.Where(x => x.UserId == userId && x.DeviceId == deviceId).ExecuteDeleteAsync();
+            await db.DevicePendingIds.Where(x => x.UserId == userId && x.DeviceId == deviceId).ExecuteDeleteAsync();
         }
     }
 }

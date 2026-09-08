@@ -22,7 +22,6 @@ using System.Linq;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
-using AspNetCore.Identity.Mongo.Model;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
@@ -44,7 +43,7 @@ namespace Streetwriters.Identity.Controllers
     public class MFAController : IdentityControllerBase
     {
         public MFAController(UserManager<User> _userManager, ITemplatedEmailSender _emailSender,
-        SignInManager<User> _signInManager, RoleManager<MongoRole> _roleManager, IMFAService _mfaService) : base(_userManager, _emailSender, _signInManager, _roleManager, _mfaService) { }
+        SignInManager<User> _signInManager, RoleManager<Role> _roleManager, IMFAService _mfaService) : base(_userManager, _emailSender, _signInManager, _roleManager, _mfaService) { }
 
         [HttpPost]
         public async Task<IActionResult> SetupAuthenticator([FromForm] MultiFactorSetupForm form)

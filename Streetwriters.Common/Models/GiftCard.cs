@@ -1,6 +1,4 @@
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using Streetwriters.Common.Interfaces;
 
 namespace Streetwriters.Common.Models
@@ -9,7 +7,7 @@ namespace Streetwriters.Common.Models
     {
         public GiftCard()
         {
-            Id = ObjectId.GenerateNewId();
+            Id = System.Guid.NewGuid().ToString();
         }
 
         public required string Code { get; set; }
@@ -21,9 +19,7 @@ namespace Streetwriters.Common.Models
         public long Timestamp { get; set; }
         public long Term { get; set; }
 
-        [BsonId]
-        [BsonRepresentation(BsonType.ObjectId)]
         [JsonIgnore]
-        public ObjectId Id { get; set; }
+        public string Id { get; set; }
     }
 }

@@ -20,8 +20,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Notesnook.API.Data;
 using Streetwriters.Common;
 
 namespace Notesnook.API
@@ -36,6 +39,13 @@ namespace Notesnook.API
             DotNetEnv.Env.TraversePath().Load(".env");
 #endif
             IHost host = CreateHostBuilder(args).Build();
+
+            // Apply EF Core migrations (creates data/notesnook.db on first run).
+            using (var scope = host.Services.CreateScope())
+            {
+                await scope.ServiceProvider.GetRequiredService<NotesnookDbContext>().Database.MigrateAsync();
+            }
+
             await host.RunAsync();
         }
 
@@ -62,7 +72,6 @@ namespace Notesnook.API
                                 listenerOptions.UseHttps(Servers.NotesnookAPI.SSLCertificate);
                             });
                         }
-                        options.Listen(IPAddress.Parse("127.0.0.1"), 5067);
                     });
                 });
     }

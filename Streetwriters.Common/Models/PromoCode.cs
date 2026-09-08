@@ -22,8 +22,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Streetwriters.Common.Models.Offer
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using Streetwriters.Common.Enums;
 using Streetwriters.Common.Interfaces;
 

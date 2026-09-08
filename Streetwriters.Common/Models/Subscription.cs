@@ -21,8 +21,6 @@ using System;
 using System.ComponentModel.DataAnnotations;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using Streetwriters.Common.Enums;
 using Streetwriters.Common.Interfaces;
 
@@ -32,11 +30,9 @@ namespace Streetwriters.Common.Models
     {
         public Subscription()
         {
-            Id = ObjectId.GenerateNewId().ToString();
+            Id = System.Guid.NewGuid().ToString();
         }
 
-        [BsonId]
-        [BsonRepresentation(BsonType.ObjectId)]
         [JsonPropertyName("id")]
         public string Id { get; set; }
 
@@ -49,7 +45,6 @@ namespace Streetwriters.Common.Models
         [JsonIgnore]
         public string? SubscriptionId { get; set; }
 
-        [BsonRepresentation(BsonType.Int32)]
         [JsonPropertyName("appId")]
         public required ApplicationType AppId { get; set; }
 
@@ -59,11 +54,9 @@ namespace Streetwriters.Common.Models
         [JsonPropertyName("expiry")]
         public long ExpiryDate { get; set; }
 
-        [BsonRepresentation(BsonType.Int32)]
         [JsonPropertyName("provider")]
         public SubscriptionProvider Provider { get; set; }
 
-        [BsonRepresentation(BsonType.Int32)]
         [JsonPropertyName("type")]
         public SubscriptionType Type
         {
@@ -99,11 +92,9 @@ namespace Streetwriters.Common.Models
         [JsonPropertyName("updatedAt")]
         public long UpdatedAt { get; set; }
 
-        [BsonRepresentation(BsonType.Int32)]
         [JsonPropertyName("plan")]
         public SubscriptionPlan Plan { get; set; }
 
-        [BsonRepresentation(BsonType.Int32)]
         [JsonPropertyName("status")]
         public SubscriptionStatus Status { get; set; }
     }

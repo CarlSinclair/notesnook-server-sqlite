@@ -180,7 +180,10 @@ namespace Streetwriters.Identity.Services
                 case "email":
                     ArgumentNullException.ThrowIfNull(user.Email);
                     string emailOTP = await UserManager.GenerateTwoFactorTokenAsync(user, TokenOptions.DefaultPhoneProvider);
-                    await EmailSender.Send2FACodeEmailAsync(user.Email, emailOTP, client);
+                    if (string.IsNullOrWhiteSpace(Streetwriters.Common.Constants.SMTP_HOST))
+                        logger.LogWarning("SMTP not configured -- 2FA email code for {Email} is: {Code}", user.Email, emailOTP);
+                    else
+                        await EmailSender.Send2FACodeEmailAsync(user.Email, emailOTP, client);
                     break;
                 case "sms":
                     ArgumentNullException.ThrowIfNull(form.PhoneNumber);

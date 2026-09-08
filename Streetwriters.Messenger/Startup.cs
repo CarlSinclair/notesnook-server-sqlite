@@ -86,7 +86,10 @@ namespace Streetwriters.Messenger
             services.AddSingleton<IHostedService, HeartbeatService>();
             services.AddResponseCompression(options =>
             {
-                options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(new[] { "text/event-stream" });
+                // NOTE: do NOT add text/event-stream here — compressing an SSE stream
+                // buffers it (Cloudflare forces Accept-Encoding: gzip on origin reqs),
+                // so the client's EventSource never sees the response open.
+                options.MimeTypes = ResponseCompressionDefaults.MimeTypes;
             });
             services.AddHealthChecks();
         }

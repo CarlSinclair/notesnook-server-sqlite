@@ -31,6 +31,12 @@ namespace Streetwriters.Common.Services
             Dictionary<string, byte[]>? attachments = null
         )
         {
+            if (string.IsNullOrWhiteSpace(Common.Constants.SMTP_HOST))
+            {
+                logger.LogWarning("SMTP not configured (SMTP_HOST empty) -- email to {Email} was NOT sent.", email);
+                return;
+            }
+
             using var mailClient = new SmtpClient();
 
             if (int.TryParse(Common.Constants.SMTP_PORT, out int port))

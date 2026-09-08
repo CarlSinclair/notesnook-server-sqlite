@@ -18,17 +18,12 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using System.Runtime.Serialization;
 
 namespace Notesnook.API.Models
 {
     public class ObjectWithId
     {
-        [BsonId]
-        [BsonIgnoreIfDefault]
-        [BsonRepresentation(BsonType.ObjectId)]
         public required string Id { get; set; }
 
         public required string ItemId { get; set; }
@@ -38,7 +33,7 @@ namespace Notesnook.API.Models
     {
         public Monograph()
         {
-            Id = ObjectId.GenerateNewId().ToString();
+            Id = System.Guid.NewGuid().ToString();
         }
 
         [DataMember(Name = "id")]
@@ -46,9 +41,6 @@ namespace Notesnook.API.Models
         [MessagePack.Key("id")]
         public string? ItemId { get; set; }
 
-        [BsonId]
-        [BsonIgnoreIfDefault]
-        [BsonRepresentation(BsonType.ObjectId)]
         [JsonIgnore]
         [MessagePack.IgnoreMember]
         public string Id { get; set; } = string.Empty;
@@ -72,7 +64,6 @@ namespace Notesnook.API.Models
         public long DatePublished { get; set; }
 
         [JsonPropertyName("content")]
-        [BsonIgnore]
         public string? Content { get; set; }
 
         [JsonIgnore]

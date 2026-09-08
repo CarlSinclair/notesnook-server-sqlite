@@ -265,3 +265,11 @@ dist/
 keystore/
 .env.local
 Notesnook.API/sync/
+# secrets — never commit
+.env
+
+# local build/editor artifacts, not part of the published source
+/ship
+.vscode/
+.build_version
+.build_offset

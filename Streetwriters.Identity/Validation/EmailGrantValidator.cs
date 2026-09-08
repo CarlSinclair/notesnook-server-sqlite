@@ -66,7 +66,6 @@ namespace Streetwriters.Identity.Validation
             var clientId = context.Request.ClientId;
             var user = await UserManager.FindRegisteredUserAsync(email, clientId) ?? new User
             {
-                Id = MongoDB.Bson.ObjectId.GenerateNewId(),
                 Email = email,
                 UserName = email,
                 NormalizedEmail = email,

@@ -1,0 +1,78 @@
+name: build & deploy
+run-name: deploy @ ${{ github.sha }}
+
+# Builds the three services and ships them to a self-hosted box over SSH.
+# Two triggers, one job:
+#   - "Run workflow" on the Actions tab (manual).
+#   - A push to master whose commit subject contains [deploy].
+#
+# The "deploy over ssh" step assumes the box exposes an SSH command that accepts
+# a gzipped tarball of the built services on stdin, keyed by "<name> <sha256>",
+# and swaps them in. Replace it with whatever your host needs (rsync, a runner,
+# a container registry, ...). Required repo secrets: DEPLOY_SSH_KEY, DEPLOY_HOST,
+# DEPLOY_PORT, DEPLOY_KNOWN_HOSTS.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[deploy]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: restore
+        run: dotnet restore Notesnook.sln
+
+      - name: build
+        run: dotnet build Notesnook.sln -c Release --no-restore
+
+      # The three services run.sh launches: identity -> api -> optional sse.
+      - name: publish
+        run: |
+          set -euxo pipefail
+          rm -rf publish
+          for m in \
+            "Notesnook.API/Notesnook.API.csproj:api" \
+            "Streetwriters.Identity/Streetwriters.Identity.csproj:identity" \
+            "Streetwriters.Messenger/Streetwriters.Messenger.csproj:sse"; do
+            csproj="${m%%:*}"; out="${m##*:}"
+            dotnet publish "$csproj" -c Release --no-build -o "publish/$out"
+          done
+          test -f publish/api/Notesnook.API.dll
+          test -f publish/identity/Streetwriters.Identity.dll
+          test -f publish/sse/Streetwriters.Messenger.dll
+
+      - name: deploy over ssh
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY"     > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          tar -C publish -czf notes.tar.gz api identity sse
+          SHA=$(sha256sum notes.tar.gz | cut -d' ' -f1)
+          echo "shipping notes.tar.gz  sha256=$SHA  bytes=$(stat -c%s notes.tar.gz)"
+          ssh -i ~/.ssh/id_ed25519 -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=20 \
+            "deploy@$DEPLOY_HOST" "notes $SHA" < notes.tar.gz

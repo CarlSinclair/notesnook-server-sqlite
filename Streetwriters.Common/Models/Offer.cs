@@ -22,8 +22,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 // Streetwriters.Common.Models.Offer
 using System.Collections.Generic;
 using System.Text.Json.Serialization;
-using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
 using Streetwriters.Common.Enums;
 using Streetwriters.Common.Interfaces;
 
@@ -33,13 +31,11 @@ namespace Streetwriters.Common.Models
     {
         public Offer()
         {
-            Id = ObjectId.GenerateNewId();
+            Id = System.Guid.NewGuid().ToString();
         }
 
-        [BsonId]
-        [BsonRepresentation(BsonType.ObjectId)]
         [JsonPropertyName("id")]
-        public ObjectId Id { get; set; }
+        public string Id { get; set; }
 
         [JsonPropertyName("appId")]
         public ApplicationType AppId { get; set; }

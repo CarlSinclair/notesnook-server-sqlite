@@ -4,6 +4,9 @@
     <TargetFramework>net9.0</TargetFramework>
     <StartupObject>Streetwriters.Messenger.Program</StartupObject>
     <Nullable>enable</Nullable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
